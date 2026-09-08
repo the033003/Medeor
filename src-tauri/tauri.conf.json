@@ -23,7 +23,13 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "$HOME/**/*"
+        ]
+      }
     }
   },
   "bundle": {
@@ -36,6 +42,11 @@
       "deb": {
         "depends": []
       }
+    }
+  },
+  "plugins": {
+    "opener": {
+      "requireLiteralLeadingDot": false
     }
   }
 }

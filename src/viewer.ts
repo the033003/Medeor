@@ -1,0 +1,138 @@
+import "./viewer.css";
+import { convertFileSrc } from "@tauri-apps/api/core";
+
+type MediaKind = "video" | "gif" | "image" | "other";
+
+const params = new URLSearchParams(window.location.search);
+const encodedPath = params.get("path") || "";
+
+let filePath = "";
+
+try {
+  filePath = decodeURIComponent(encodedPath);
+} catch {
+  filePath = encodedPath;
+}
+
+function mediaKind(path: string): MediaKind {
+  const ext = path.split(".").pop()?.toLowerCase() || "";
+
+  if (["mp4", "webm", "mov", "m4v", "avi", "mkv", "wmv"].includes(ext)) {
+    return "video";
+  }
+
+  if (ext === "gif") return "gif";
+
+  if (
+    ["jpg", "jpeg", "png", "webp", "avif", "bmp", "svg", "heic", "heif"].includes(ext)
+  ) {
+    return "image";
+  }
+
+  return "other";
+}
+
+const root = document.getElementById("viewer");
+
+if (!root) {
+  throw new Error("Viewer root not found");
+}
+
+if (!filePath) {
+  root.innerHTML = `<div class="error">No media file was supplied.</div>`;
+} else {
+  const kind = mediaKind(filePath);
+  const src = convertFileSrc(filePath);
+
+  document.title = filePath.split("/").pop() || "Medeor Viewer";
+
+  const header = document.createElement("header");
+  header.className = "viewer-header";
+
+  const title = document.createElement("div");
+  title.className = "viewer-title";
+  title.textContent = filePath.split("/").pop() || "Media";
+
+  header.appendChild(title);
+
+  const stage = document.createElement("main");
+  stage.className = "viewer-stage";
+
+  if (kind === "video") {
+    const video = document.createElement("video");
+
+    video.className = "viewer-media";
+    video.src = src;
+    video.controls = true;
+    video.autoplay = false;
+    video.loop = false;
+    video.playsInline = true;
+    video.preload = "auto";
+
+    video.addEventListener("error", () => {
+      console.error("[Medeor Viewer] Video error:", video.error);
+      console.error("[Medeor Viewer] Source:", src);
+
+      showError(
+        `Unable to play video<br><small>${escapeHtml(filePath)}</small>`
+      );
+    });
+
+    video.addEventListener("loadedmetadata", () => {
+      console.log(
+        "[Medeor Viewer] Video loaded:",
+        video.videoWidth,
+        "x",
+        video.videoHeight,
+        "duration:",
+        video.duration
+      );
+    });
+
+    stage.appendChild(video);
+  } else if (kind === "gif" || kind === "image") {
+    const image = document.createElement("img");
+
+    image.className = "viewer-media";
+    image.src = src;
+    image.alt = filePath.split("/").pop() || "Media";
+
+    image.addEventListener("error", () => {
+      console.error("[Medeor Viewer] Image failed:", src);
+
+      showError(
+        `Unable to display image<br><small>${escapeHtml(filePath)}</small>`
+      );
+    });
+
+    stage.appendChild(image);
+  } else {
+    showError(`Unsupported media type<br><small>${escapeHtml(filePath)}</small>`);
+  }
+
+  root.replaceChildren(header, stage);
+}
+
+function showError(message: string) {
+  const existing = root?.querySelector(".error");
+
+  if (existing) {
+    existing.innerHTML = message;
+    return;
+  }
+
+  const error = document.createElement("div");
+  error.className = "error";
+  error.innerHTML = message;
+
+  root?.appendChild(error);
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}

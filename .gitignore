@@ -7,3 +7,24 @@ target/
 *.db-shm
 *.db-wal
 .DS_Store
+
+# Local development/edit scripts
+edit_*.sh
+fix_*.sh
+cleanup_*.sh
+*.sh
+.medeor-backup-*/
+
+# Medeor development/build output
+dist/
+src-tauri/target/
+
+# Local one-off fix scripts
+*.sh
+
+# Temporary Medeor fix scripts
+*.sh
+
+# Build output
+dist/
+src-tauri/target/

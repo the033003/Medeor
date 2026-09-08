@@ -1,14 +1,19 @@
 import { defineConfig } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
+import { resolve } from "path";
 
 export default defineConfig({
-  plugins: [svelte()],
   server: {
     port: 1420,
-    strictPort: true,
-    watch: {
-      ignored: ["**/src-tauri/**"]
-    }
+    strictPort: true
   },
-  clearScreen: false
+  plugins: [svelte()],
+  build: {
+    rollupOptions: {
+      input: {
+        main: resolve(__dirname, "index.html"),
+        viewer: resolve(__dirname, "viewer.html")
+      }
+    }
+  }
 });

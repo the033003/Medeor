@@ -2,7 +2,11 @@ use rusqlite::{params, Connection};
 use serde::Serialize;
 use std::fs;
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::net::{TcpListener, TcpStream};
+use tauri::webview::WebviewWindowBuilder;
+use tauri::WebviewUrl;
 use tauri::{Manager, State};
 
 struct Database(Mutex<Connection>);
@@ -78,6 +82,34 @@ fn list_media(db: State<'_, Database>, search: String) -> Result<Vec<Media>, Str
         .0
         .lock()
         .map_err(|_| "Database lock failed".to_string())?;
+
+    // Automatically remove library entries whose files no longer exist.
+    {
+        let mut stale = connection
+            .prepare("SELECT id, path FROM media")
+            .map_err(|e| e.to_string())?;
+
+        let rows = stale
+            .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))
+            .map_err(|e| e.to_string())?;
+
+        let mut missing = Vec::new();
+
+        for row in rows {
+            let (id, path) = row.map_err(|e| e.to_string())?;
+            if !Path::new(&path).is_file() {
+                missing.push(id);
+            }
+        }
+
+        drop(stale);
+
+        for id in missing {
+            connection
+                .execute("DELETE FROM media WHERE id = ?1", params![id])
+                .map_err(|e| e.to_string())?;
+        }
+    }
 
     let pattern = format!("%{}%", search.trim());
 
@@ -166,6 +198,87 @@ fn import_media(
 }
 
 #[tauri::command]
+fn read_media_file(path: String) -> Result<Vec<u8>, String> {
+    let file_path = Path::new(&path);
+
+    if !file_path.is_file() {
+        return Err(format!("File no longer exists: {}", file_path.display()));
+    }
+
+    fs::read(file_path)
+        .map_err(|e| format!("Could not read {}: {e}", file_path.display()))
+}
+
+
+static MEDIA_SERVER_PORT: OnceLock<u16> = OnceLock::new();
+
+
+#[tauri::command]
+fn media_server_port() -> Result<u16, String> {
+    MEDIA_SERVER_PORT
+        .get()
+        .copied()
+        .ok_or_else(|| "Media server is not running".to_string())
+}
+
+#[tauri::command]
+fn open_viewer(
+    app: tauri::AppHandle,
+    path: String,
+) -> Result<(), String> {
+    let media_path = Path::new(&path);
+
+    if !media_path.is_file() {
+        return Err(format!(
+            "File no longer exists: {}",
+            media_path.display()
+        ));
+    }
+
+    println!("[Medeor] Opening viewer: {}", path);
+
+    let id = static_id();
+    let label = format!("viewer-{id}");
+
+    let encoded_path =
+        percent_encoding::utf8_percent_encode(
+            &path,
+            percent_encoding::NON_ALPHANUMERIC,
+        )
+        .to_string();
+
+    let url = format!("viewer.html?path={encoded_path}");
+
+    WebviewWindowBuilder::new(
+        &app,
+        label,
+        WebviewUrl::App(url.into()),
+    )
+    .title(
+        media_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("Medeor Viewer"),
+    )
+    .inner_size(1100.0, 700.0)
+    .min_inner_size(700.0, 450.0)
+    .resizable(true)
+    .fullscreen(false)
+    .build()
+    .map_err(|e| format!("Could not open viewer: {e}"))?;
+
+    Ok(())
+}
+
+fn static_id() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static ID: AtomicU64 = AtomicU64::new(1);
+
+    ID.fetch_add(1, Ordering::Relaxed)
+}
+
+#[tauri::command]
 fn remove_media(db: State<'_, Database>, id: i64) -> Result<(), String> {
     let connection = db
         .0
@@ -187,15 +300,16 @@ pub fn run() {
         .setup(|app| {
             let database = init_database(app.handle())
                 .expect("failed to initialize Medeor database");
-
-            app.manage(Database(Mutex::new(database)));
-
-            Ok(())
+app.manage(Database(Mutex::new(database)));
+Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             list_media,
             import_media,
-            remove_media
+            remove_media,
+            open_viewer,
+            read_media_file,
+            media_server_port
         ])
         .run(tauri::generate_context!())
         .expect("error while running Medeor");

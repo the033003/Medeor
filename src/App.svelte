@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
+  import { invoke, convertFileSrc } from "@tauri-apps/api/core";
   import { open } from "@tauri-apps/plugin-dialog";
-  import { openPath } from "@tauri-apps/plugin-opener";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
 
   type Page = "view" | "import";
 
@@ -21,7 +21,227 @@
   let error = "";
   let dragActive = false;
 
+  let selectMode = false;
+  let selectedIds = new Set<number>();
+  let openMenuId: number | null = null;
+
+  let videoPreviews: Record<number, string> = {};
+  let viewerScale = 1;
+
+  function handleViewerVideoError(event: Event) {
+    const video = event.currentTarget as HTMLVideoElement;
+    const mediaError = video.error;
+
+    if (mediaError) {
+      const messages: Record<number, string> = {
+        1: "MEDIA_ERR_ABORTED",
+        2: "MEDIA_ERR_NETWORK",
+        3: "MEDIA_ERR_DECODE",
+        4: "MEDIA_ERR_SRC_NOT_SUPPORTED"
+      };
+
+      error =
+        `Video error: ${messages[mediaError.code] || `code ${mediaError.code}`} ` +
+        `(${mediaError.message || "no additional message"})`;
+
+      console.error("[Medeor viewer] Video error", {
+        path: viewerItem?.path,
+        code: mediaError.code,
+        message: mediaError.message,
+        networkState: video.networkState,
+        readyState: video.readyState
+      });
+    } else {
+      error = "Video failed to load.";
+    }
+  }
+
+  function handleViewerVideoLoaded() {
+    if (!viewerVideo) return;
+
+    console.log("[Medeor viewer] Video loaded", {
+      duration: viewerVideo.duration,
+      width: viewerVideo.videoWidth,
+      height: viewerVideo.videoHeight,
+      readyState: viewerVideo.readyState
+    });
+
+    viewerDuration = Number.isFinite(viewerVideo.duration)
+      ? viewerVideo.duration
+      : 0;
+  }
+
+  function resetViewerZoom() {
+    viewerScale = 1;
+  }
+
+  function zoomViewer(amount: number) {
+    viewerScale = Math.max(0.25, Math.min(5, viewerScale + amount));
+  }
+
+  function captureVideoPreview(
+    event: Event,
+    id: number
+  ) {
+    const video = event.currentTarget as HTMLVideoElement;
+
+    if (!video.videoWidth || !video.videoHeight) {
+      return;
+    }
+
+    try {
+      const canvas = document.createElement("canvas");
+      const maxWidth = 640;
+      const scale = Math.min(1, maxWidth / video.videoWidth);
+
+      canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+      canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+
+      const context = canvas.getContext("2d");
+
+      if (!context) {
+        return;
+      }
+
+      context.drawImage(
+        video,
+        0,
+        0,
+        canvas.width,
+        canvas.height
+      );
+
+      videoPreviews = {
+        ...videoPreviews,
+        [id]: canvas.toDataURL("image/jpeg", 0.78)
+      };
+    } catch {
+      // Some WebKit configurations can reject canvas capture.
+      // The video element remains as the fallback preview.
+    }
+  }
+
+
+
+  let deleteTarget: Media | null = null;
+  let deleteTargets: Media[] = [];
+
+  let viewerVideo: HTMLVideoElement | null = null;
+  let viewerPlaying = false;
+  let viewerTime = 0;
+  let viewerDuration = 0;
+  let viewerVolume = 1;
+  let viewerUrl = "";
+
+  const params = new URLSearchParams(window.location.search);
+  const viewerPath = params.get("viewer");
+
+  let viewerItem: Media | null = viewerPath
+    ? {
+        id: 0,
+        path: viewerPath,
+        name: viewerPath.split("/").pop() || "Media",
+        media_type: getMediaType(viewerPath),
+        size: 0,
+        added_at: ""
+      }
+    : null;
+
   $: filteredMedia = media;
+
+  function getMediaType(path: string): string {
+    const extension =
+      path.split(".").pop()?.toLowerCase() || "";
+
+    if (
+      ["mp4", "webm", "mkv", "mov", "avi", "m4v", "wmv"].includes(extension)
+    ) {
+      return "video";
+    }
+
+    if (extension === "gif") return "gif";
+
+    if (
+      [
+        "jpg",
+        "jpeg",
+        "png",
+        "webp",
+        "avif",
+        "bmp",
+        "svg",
+        "heic",
+        "heif"
+      ].includes(extension)
+    ) {
+      return "image";
+    }
+
+    return "other";
+  }
+
+  const mediaUrls = new Map<string, string>();
+
+  async function mediaSrc(path: string): Promise<string> {
+    const cached = mediaUrls.get(path);
+    if (cached) return cached;
+
+    console.log("[Medeor] Reading media:", path);
+
+    const bytes = await invoke<number[]>("read_media_file", { path });
+
+    const extension = path.split(".").pop()?.toLowerCase() || "";
+
+    const mime: Record<string, string> = {
+      jpg: "image/jpeg",
+      jpeg: "image/jpeg",
+      png: "image/png",
+      webp: "image/webp",
+      avif: "image/avif",
+      bmp: "image/bmp",
+      gif: "image/gif",
+      mp4: "video/mp4",
+      webm: "video/webm",
+      mov: "video/quicktime",
+      m4v: "video/mp4"
+    };
+
+    const blob = new Blob(
+      [new Uint8Array(bytes)],
+      { type: mime[extension] || "application/octet-stream" }
+    );
+
+    const url = URL.createObjectURL(blob);
+    mediaUrls.set(path, url);
+
+    console.log("[Medeor] Media loaded:", path, url);
+
+    return url;
+  }
+
+  function mediaError(kind: string, path: string, event: Event) {
+    console.error("[Medeor]", kind, "FAILED:", path, event);
+  }
+
+  function mediaLoaded(kind: string, path: string) {
+    console.log(`[Medeor] ${kind} loaded:`, path);
+  }
+
+  function mediaFailed(kind: string, path: string, event: Event) {
+    console.error(`[Medeor] ${kind} FAILED:`, path);
+    console.error("  event:", event);
+
+    const target = event.currentTarget as HTMLMediaElement | HTMLImageElement;
+
+    if (target instanceof HTMLMediaElement) {
+      console.error("  src:", target.src);
+      console.error("  networkState:", target.networkState);
+      console.error("  readyState:", target.readyState);
+      console.error("  error:", target.error);
+    } else {
+      console.error("  src:", target.src);
+    }
+  }
 
   async function loadMedia() {
     try {
@@ -43,30 +263,15 @@
           {
             name: "Media",
             extensions: [
-              "jpg",
-              "jpeg",
-              "png",
-              "webp",
-              "avif",
-              "bmp",
-              "gif",
-              "heic",
-              "heif",
-              "mp4",
-              "webm",
-              "mkv",
-              "mov",
-              "avi",
-              "m4v",
-              "wmv"
+              "jpg", "jpeg", "png", "webp", "avif", "bmp",
+              "gif", "heic", "heif",
+              "mp4", "webm", "mkv", "mov", "avi", "m4v", "wmv"
             ]
           }
         ]
       });
 
-      if (!selected) {
-        return;
-      }
+      if (!selected) return;
 
       const paths = Array.isArray(selected) ? selected : [selected];
 
@@ -93,34 +298,156 @@
   }
 
   async function openMedia(item: Media) {
+    resetViewerZoom();
     try {
-      await openPath(item.path);
+      await invoke("open_viewer", { path: item.path });
     } catch (e) {
       error = String(e);
     }
   }
 
-  function handleDragOver(event: DragEvent) {
-    event.preventDefault();
-    dragActive = true;
+  function toggleSelected(id: number) {
+    const next = new Set(selectedIds);
+
+    if (next.has(id)) {
+      next.delete(id);
+    } else {
+      next.add(id);
+    }
+
+    selectedIds = next;
   }
 
-  function handleDragLeave(event: DragEvent) {
-    event.preventDefault();
-    dragActive = false;
+  function selectAll() {
+    selectedIds = new Set(filteredMedia.map((item) => item.id));
   }
 
-  async function handleDrop(event: DragEvent) {
-    event.preventDefault();
-    dragActive = false;
+  function cancelSelection() {
+    selectedIds = new Set();
+    selectMode = false;
+  }
 
-    const files = Array.from(event.dataTransfer?.files ?? []);
+  function requestRemove(item: Media) {
+    openMenuId = null;
+    deleteTarget = item;
+  }
 
-    const paths = files
-      .map((file) => (file as File & { path?: string }).path)
-      .filter((path): path is string => Boolean(path));
+  function requestRemoveSelected() {
+    if (!selectedIds.size) return;
 
-    await importFiles(paths);
+    deleteTargets = filteredMedia.filter((item) =>
+      selectedIds.has(item.id)
+    );
+  }
+
+  function cancelRemove() {
+    deleteTarget = null;
+    deleteTargets = [];
+  }
+
+  async function confirmRemove() {
+    try {
+      if (deleteTarget) {
+        await invoke("remove_media", {
+          id: deleteTarget.id
+        });
+
+        deleteTarget = null;
+      }
+
+      if (deleteTargets.length) {
+        for (const item of deleteTargets) {
+          await invoke("remove_media", {
+            id: item.id
+          });
+        }
+
+        deleteTargets = [];
+        selectedIds = new Set();
+        selectMode = false;
+      }
+
+      await loadMedia();
+    } catch (e) {
+      error = String(e);
+      cancelRemove();
+    }
+  }
+
+  async function setupNativeDrop() {
+    try {
+      const window = getCurrentWindow();
+
+      await window.onDragDropEvent(async (event) => {
+        if (event.payload.type === "over") {
+          dragActive = true;
+        }
+
+        if (event.payload.type === "leave") {
+          dragActive = false;
+        }
+
+        if (event.payload.type === "drop") {
+          dragActive = false;
+          await importFiles(event.payload.paths);
+        }
+      });
+    } catch (e) {
+      console.error("Native drag/drop setup failed:", e);
+    }
+  }
+
+  function togglePlayback() {
+    if (!viewerVideo) return;
+
+    if (viewerVideo.paused) {
+      viewerVideo.play();
+    } else {
+      viewerVideo.pause();
+    }
+  }
+
+  function updateVideo() {
+    if (!viewerVideo) return;
+
+    viewerTime = viewerVideo.currentTime;
+    viewerDuration = viewerVideo.duration || 0;
+  }
+
+  function seekVideo(event: Event) {
+    if (!viewerVideo) return;
+
+    const input = event.currentTarget as HTMLInputElement;
+    viewerVideo.currentTime = Number(input.value);
+  }
+
+  function setVolume(event: Event) {
+    if (!viewerVideo) return;
+
+    const input = event.currentTarget as HTMLInputElement;
+    viewerVolume = Number(input.value);
+    viewerVideo.volume = viewerVolume;
+  }
+
+  async function fullscreen(element: HTMLElement) {
+    try {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen();
+      } else {
+        await element.requestFullscreen();
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  function formatTime(seconds: number) {
+    if (!Number.isFinite(seconds)) return "0:00";
+
+    const minutes = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+
+    return `${minutes}:${secs.toString().padStart(2, "0")}`;
   }
 
   function navigate(nextPage: Page) {
@@ -133,199 +460,506 @@
     if (bytes < 1024 * 1024 * 1024) {
       return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
     }
+
     return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
   }
 
-  $: search, loadMedia();
+  setupNativeDrop();
+
+  if (!viewerItem) {
+    loadMedia();
+  } else {
+    mediaSrc(viewerItem.path)
+      .then((url) => {
+        viewerUrl = url;
+      })
+      .catch((e) => {
+        console.error("[Medeor] Viewer load failed:", e);
+      });
+  }
 </script>
 
 <svelte:head>
-  <title>Medeor</title>
+  <title>{viewerItem ? viewerItem.name : "Medeor"}</title>
 </svelte:head>
 
-<div class="app-shell">
-  <aside class="sidebar">
-    <div class="brand">
-      <div class="brand-mark">☄</div>
-
-      <div>
-        <div class="brand-name">Medeor</div>
-        <div class="brand-subtitle">media, made simple</div>
+{#if viewerItem}
+  <div class="viewer-window">
+    <header class="viewer-header">
+      <div class="viewer-heading">
+        <strong>{viewerItem.name}</strong>
+        <span>{viewerItem.media_type}</span>
       </div>
-    </div>
+    </header>
 
-    <nav class="navigation" aria-label="Main navigation">
-      <button
-        class:active={page === "view"}
-        class="nav-item"
-        onclick={() => navigate("view")}
-      >
-        <span class="nav-icon">◉</span>
-        <span>View</span>
-      </button>
+    <main class="viewer-stage">
+      {#if viewerItem.media_type === "video"}
+        <video
+          bind:this={viewerVideo}
+          class="viewer-media"
+          src={viewerUrl}
+          preload="metadata"
+          playsinline
+          onclick={togglePlayback}
+          ontimeupdate={updateVideo}
+          onloadedmetadata={updateVideo}
+          onplay={() => (viewerPlaying = true)}
+          onpause={() => (viewerPlaying = false)}
+        >
+          <track kind="captions" srclang="en" label="Captions" />
+        </video>
 
-      <button
-        class:active={page === "import"}
-        class="nav-item"
-        onclick={() => navigate("import")}
-      >
-        <span class="nav-icon">↓</span>
-        <span>Import</span>
-      </button>
-    </nav>
+        <div class="viewer-controls">
+          <button
+            class="viewer-control"
+            onclick={togglePlayback}
+            aria-label="Play or pause"
+          >
+            {viewerPlaying ? "❚❚" : "▶"}
+          </button>
 
-    <div class="sidebar-section">
-      <div class="sidebar-heading">Library</div>
-
-      <div class="library-count">
-        <span>All media</span>
-        <span class="tag-count">{media.length}</span>
-      </div>
-    </div>
-
-    <div class="sidebar-footer">
-      <button class="settings-button">
-        <span>⚙</span>
-        <span>Settings</span>
-      </button>
-    </div>
-  </aside>
-
-  <main class="main">
-    {#if page === "view"}
-      <header class="topbar">
-        <div>
-          <div class="eyebrow">LIBRARY</div>
-          <h1>View</h1>
-        </div>
-
-        <div class="search">
-          <span class="search-icon">⌕</span>
+          <span class="viewer-time">
+            {formatTime(viewerTime)}
+          </span>
 
           <input
-            bind:value={search}
-            placeholder="Search media..."
-            aria-label="Search media"
+            class="viewer-progress"
+            type="range"
+            min="0"
+            max={viewerDuration || 0}
+            step="0.1"
+            value={viewerTime}
+            oninput={seekVideo}
+            aria-label="Video progress"
           />
 
-          <kbd>/</kbd>
+          <span class="viewer-time">
+            {formatTime(viewerDuration)}
+          </span>
+
+          <button
+            class="viewer-control"
+            onclick={() => {
+              viewerVolume = viewerVolume > 0 ? 0 : 1;
+              if (viewerVideo) viewerVideo.volume = viewerVolume;
+            }}
+            aria-label="Mute"
+          >
+            {viewerVolume === 0 ? "🔇" : "🔊"}
+          </button>
+
+          <input
+            class="viewer-volume"
+            type="range"
+            min="0"
+            max="1"
+            step="0.01"
+            value={viewerVolume}
+            oninput={setVolume}
+            aria-label="Volume"
+          />
+
+          <button
+            class="viewer-control"
+            onclick={(event) =>
+              fullscreen(
+                (event.currentTarget as HTMLElement).closest(
+                  ".viewer-stage"
+                ) as HTMLElement
+              )}
+            aria-label="Fullscreen"
+          >
+            ⛶
+          </button>
         </div>
-      </header>
+      {:else if viewerItem.media_type === "gif"}
+        <img
+          class="viewer-media"
+          src={viewerUrl}
+          alt={viewerItem.name}
+          onload={() => mediaLoaded("VIEWER IMAGE", viewerItem.path)}
+          onerror={(event) => mediaFailed("VIEWER IMAGE", viewerItem.path, event)}
+        />
 
-      <section class="content">
-        {#if error}
-          <div class="error-banner">{error}</div>
-        {/if}
+        <button
+          class="viewer-floating-control"
+          onclick={(event) =>
+            fullscreen(
+              (event.currentTarget as HTMLElement).closest(
+                ".viewer-stage"
+              ) as HTMLElement
+            )}
+        >
+          ⛶
+        </button>
+      {:else if viewerItem.media_type === "image"}
+        <img
+          class="viewer-media"
+          src={viewerUrl}
+          alt={viewerItem.name}
+          onload={() => mediaLoaded("VIEWER IMAGE", viewerItem.path)}
+          onerror={(event) => mediaFailed("VIEWER IMAGE", viewerItem.path, event)}
+        />
 
-        {#if filteredMedia.length === 0}
-          <div class="empty-state">
-            <div class="empty-orbit">
-              <div class="empty-mark">☄</div>
+        <button
+          class="viewer-floating-control"
+          onclick={(event) =>
+            fullscreen(
+              (event.currentTarget as HTMLElement).closest(
+                ".viewer-stage"
+              ) as HTMLElement
+            )}
+        >
+          ⛶
+        </button>
+      {:else}
+        <div class="viewer-error">
+          This media type cannot be previewed.
+        </div>
+      {/if}
+    </main>
+  </div>
+{:else}
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">☄</div>
+
+        <div>
+          <div class="brand-name">Medeor</div>
+          <div class="brand-subtitle">media, made simple</div>
+        </div>
+      </div>
+
+      <nav class="navigation" aria-label="Main navigation">
+        <button
+          class:active={page === "view"}
+          class="nav-item"
+          onclick={() => navigate("view")}
+        >
+          <span class="nav-icon">◉</span>
+          <span>View</span>
+        </button>
+
+        <button
+          class:active={page === "import"}
+          class="nav-item"
+          onclick={() => navigate("import")}
+        >
+          <span class="nav-icon">↓</span>
+          <span>Import</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-section">
+        <div class="sidebar-heading">Library</div>
+
+        <div class="library-count">
+          <span>All media</span>
+          <span class="tag-count">{media.length}</span>
+        </div>
+      </div>
+
+      <div class="sidebar-footer">
+        <button class="settings-button">
+          <span>⚙</span>
+          <span>Settings</span>
+        </button>
+      </div>
+    </aside>
+
+    <main class="main">
+      {#if page === "view"}
+        <header class="topbar">
+          <div>
+            <div class="eyebrow">LIBRARY</div>
+            <h1>View</h1>
+          </div>
+
+          <div class="search">
+            <span class="search-icon">⌕</span>
+
+            <input
+              bind:value={search}
+              placeholder="Search media..."
+              aria-label="Search media"
+            />
+
+            <kbd>/</kbd>
+          </div>
+        </header>
+
+        <section class="content">
+          {#if error}
+            <div class="error-banner">{error}</div>
+          {/if}
+
+          <div class="library-toolbar">
+            {#if selectMode}
+              <button class="secondary-button" onclick={selectAll}>
+                Select All
+              </button>
+
+              <button
+                class="danger-button"
+                onclick={requestRemoveSelected}
+                disabled={!selectedIds.size}
+              >
+                Remove Selected ({selectedIds.size})
+              </button>
+
+              <button class="secondary-button" onclick={cancelSelection}>
+                Cancel
+              </button>
+            {:else}
+              <button
+                class="secondary-button"
+                onclick={() => (selectMode = true)}
+              >
+                Select
+              </button>
+            {/if}
+          </div>
+
+          {#if filteredMedia.length === 0}
+            <div class="empty-state">
+              <div class="empty-orbit">
+                <div class="empty-mark">☄</div>
+              </div>
+
+              <h2>Your library is empty</h2>
+
+              <p>
+                Drop some media into Medeor and start building your visual
+                library.
+              </p>
+
+              <button
+                class="primary-button"
+                onclick={() => navigate("import")}
+              >
+                <span>↓</span>
+                Import Media
+              </button>
             </div>
+          {:else}
+            <div class="library-grid">
+              {#each filteredMedia as item}
+                <div
+                  class:selected={selectedIds.has(item.id)}
+                  class="media-card"
+                  title={item.path}
+                >
+                  {#if selectMode}
+                    <label class="selection-box">
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.has(item.id)}
+                        onchange={() => toggleSelected(item.id)}
+                      />
+                    </label>
+                  {/if}
 
-            <h2>Your library is empty</h2>
+                  <button
+                    class="media-open"
+                    onclick={() => {
+                      if (selectMode) {
+                        toggleSelected(item.id);
+                      } else {
+                        openMedia(item);
+                      }
+                    }}
+                  >
+                    <div class="media-preview">
+                      {#if item.media_type === "video"}
+                        <video
+                          class="preview-video"
+                          src={mediaUrls.get(item.path) || ""}
+                          preload="metadata"
+                          muted
+                          playsinline
+                          onloadedmetadata={() => mediaLoaded("THUMB VIDEO", item.path)}
+                          oncanplay={() => mediaLoaded("THUMB VIDEO CANPLAY", item.path)}
+                          onerror={(event) => mediaFailed("THUMB VIDEO", item.path, event)}
+                        ></video>
+
+                        <div class="preview-play">▶</div>
+                      {:else if item.media_type === "gif" || item.media_type === "image"}
+                        <img
+                          src={mediaUrls.get(item.path) || ""}
+                          alt=""
+                          loading="lazy"
+                          onload={() => mediaLoaded("THUMB IMAGE", item.path)}
+                          onerror={(event) => mediaFailed("THUMB IMAGE", item.path, event)}
+                        />
+                      {:else}
+                        <div class="media-type">◇</div>
+                      {/if}
+                    </div>
+
+                    <div class="media-info">
+                      <div class="media-name">{item.name}</div>
+
+                      <div class="media-meta">
+                        {item.media_type} · {formatSize(item.size)}
+                      </div>
+                    </div>
+                  </button>
+
+                  {#if !selectMode}
+                    <div class="media-menu">
+                      <button
+                        class="menu-button"
+                        aria-label="Media options"
+                        onclick={(event) => {
+                          event.stopPropagation();
+                          openMenuId =
+                            openMenuId === item.id
+                              ? null
+                              : item.id;
+                        }}
+                      >
+                        ⋮
+                      </button>
+
+                      {#if openMenuId === item.id}
+                        <div class="menu">
+                          <button
+                            onclick={() => requestRemove(item)}
+                          >
+                            Remove from Library
+                          </button>
+
+                          <button disabled>
+                            Edit Tags
+                          </button>
+
+                          <button disabled>
+                            Rename
+                          </button>
+
+                          <button disabled>
+                            File Info
+                          </button>
+                        </div>
+                      {/if}
+                    </div>
+                  {/if}
+                </div>
+              {/each}
+            </div>
+          {/if}
+        </section>
+      {:else}
+        <header class="topbar">
+          <div>
+            <div class="eyebrow">LIBRARY</div>
+            <h1>Import Media</h1>
+          </div>
+        </header>
+
+        <section class="content import-content">
+          {#if error}
+            <div class="error-banner">{error}</div>
+          {/if}
+
+          <div
+            class:drag-active={dragActive}
+            class="drop-zone"
+            role="button"
+            tabindex="0"
+            aria-label="Drop media here"
+            onclick={chooseFiles}
+            onkeydown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                chooseFiles();
+              }
+            }}
+          >
+            <div class="drop-icon">↓</div>
+
+            <h2>
+              {loading ? "Importing..." : "Drop media here"}
+            </h2>
 
             <p>
-              Drop some media into Medeor and start building your visual
-              library.
+              Videos, images, GIFs, and other visual media.
             </p>
 
             <button
-              class="primary-button"
-              onclick={() => navigate("import")}
+              class="secondary-button"
+              onclick={(event) => {
+                event.stopPropagation();
+                chooseFiles();
+              }}
+              disabled={loading}
             >
-              <span>↓</span>
-              Import Media
+              Browse Files
             </button>
           </div>
-        {:else}
-          <div class="library-grid">
-            {#each filteredMedia as item}
-              <button
-                class="media-card"
-                onclick={() => openMedia(item)}
-                title={item.path}
-              >
-                <div class="media-preview">
-                  <div class="media-type">
-                    {item.media_type === "video"
-                      ? "▶"
-                      : item.media_type === "gif"
-                        ? "GIF"
-                        : "◇"}
-                  </div>
-                </div>
 
-                <div class="media-info">
-                  <div class="media-name">{item.name}</div>
-                  <div class="media-meta">
-                    {item.media_type} · {formatSize(item.size)}
-                  </div>
-                </div>
-              </button>
-            {/each}
+          <div class="import-note">
+            <span class="note-icon">✦</span>
+
+            <div>
+              <strong>Your files stay where they are.</strong>
+
+              <p>
+                Medeor stores library metadata locally. Importing does not
+                copy or move your media.
+              </p>
+            </div>
           </div>
-        {/if}
-      </section>
-    {:else}
-      <header class="topbar">
-        <div>
-          <div class="eyebrow">LIBRARY</div>
-          <h1>Import Media</h1>
-        </div>
-      </header>
+        </section>
+      {/if}
+    </main>
+  </div>
 
-      <section class="content import-content">
-        {#if error}
-          <div class="error-banner">{error}</div>
-        {/if}
+  {#if deleteTarget || deleteTargets.length}
+    <div
+      class="modal-backdrop"
+      role="presentation"
+      onclick={(event) => {
+        if (event.target === event.currentTarget) {
+          cancelRemove();
+        }
+      }}
+    >
+      <div class="delete-modal" role="dialog" aria-modal="true">
+        <div class="delete-icon">−</div>
 
-        <div
-          class:drag-active={dragActive}
-          class="drop-zone"
-          role="button"
-          tabindex="0"
-          aria-label="Drop media here"
-          ondragover={handleDragOver}
-          ondragleave={handleDragLeave}
-          ondrop={handleDrop}
-          onclick={chooseFiles}
-          onkeydown={(event) => {
-            if (event.key === "Enter" || event.key === " ") chooseFiles();
-          }}
-        >
-          <div class="drop-icon">↓</div>
-
-          <h2>{loading ? "Importing..." : "Drop media here"}</h2>
+        <div class="delete-content">
+          <h2>
+            {deleteTargets.length
+              ? `Remove ${deleteTargets.length} item${deleteTargets.length === 1 ? "" : "s"}?`
+              : "Remove from library?"}
+          </h2>
 
           <p>
-            Videos, images, GIFs, and other visual media.
+            This removes the item from Medeor only.
+            Your actual file will stay safely on your computer.
           </p>
 
+          {#if deleteTarget}
+            <div class="delete-filename">
+              {deleteTarget.name}
+            </div>
+          {/if}
+        </div>
+
+        <div class="modal-actions">
+          <button class="secondary-button" onclick={cancelRemove}>
+            Cancel
+          </button>
+
           <button
-            class="secondary-button"
-            onclick={(event) => {
-              event.stopPropagation();
-              chooseFiles();
-            }}
-            disabled={loading}
+            class="danger-button modal-delete"
+            onclick={confirmRemove}
           >
-            Browse Files
+            Remove from Library
           </button>
         </div>
-
-        <div class="import-note">
-          <span class="note-icon">✦</span>
-
-          <div>
-            <strong>Your files stay where they are.</strong>
-            <p>
-              Medeor stores library metadata locally. Importing does not copy
-              or move your media.
-            </p>
-          </div>
-        </div>
-      </section>
-    {/if}
-  </main>
-</div>
+      </div>
+    </div>
+  {/if}
+{/if}
