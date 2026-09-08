@@ -12,7 +12,13 @@
     media_type: string;
     size: number;
     added_at: string;
+  }
+  type PlaylistItem = {
+    playlist_id: number;
+    media_id: number;
+    position: number;
   };
+;
 
   let page: Page = "view";
   let search = "";
@@ -633,6 +639,193 @@
     return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
   }
 
+
+  type Tag = {
+    id: number;
+    name: string;
+  };
+
+  type Playlist = {
+    id: number;
+    name: string;
+    created_at: string;
+  };
+
+  type MediaOrganization = {
+    media_id: number;
+    tags: Tag[];
+    playlists: Playlist[];
+  };
+
+  let tags: Tag[] = [];
+  let playlists: Playlist[] = [];
+  let mediaOrganization: Record<number, MediaOrganization> = {};
+
+  let showTags = false;
+  let showPlaylists = false;
+  let showTagFilter = false;
+  let selectedTagId: number | null = null;
+  let selectedTagIds = new Set<number>();
+
+  let organizationEditor: "tags" | "playlists" | null = null;
+  let organizationMediaId: number | null = null;
+
+  let importTagIds = new Set<number>();
+  let importPlaylistIds = new Set<number>();
+  let showImportOrganization = false;
+
+  async function loadOrganization() {
+    try {
+      const [loadedTags, loadedPlaylists, organization] = await Promise.all([
+        invoke<Tag[]>("list_tags"),
+        invoke<Playlist[]>("list_playlists"),
+        invoke<MediaOrganization[]>("list_media_organization")
+      ]);
+
+      tags = loadedTags;
+      playlists = loadedPlaylists;
+
+      const next: Record<number, MediaOrganization> = {};
+      for (const item of organization) {
+        next[item.media_id] = item;
+      }
+
+      mediaOrganization = next;
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  function organizationFor(id: number): MediaOrganization {
+    return mediaOrganization[id] || {
+      media_id: id,
+      tags: [],
+      playlists: []
+    };
+  }
+
+  function filteredMedia() {
+    if (selectedTagIds.size === 0) return media;
+
+    return media.filter((item) => {
+      const assigned = new Set(
+        organizationFor(item.id).tags.map((tag) => tag.id)
+      );
+
+      for (const tagId of selectedTagIds) {
+        if (!assigned.has(tagId)) return false;
+      }
+
+      return true;
+    });
+  }
+
+  function openOrganizationEditor(
+    mediaId: number,
+    kind: "tags" | "playlists"
+  ) {
+    organizationMediaId = mediaId;
+    organizationEditor = kind;
+    openMenuId = null;
+  }
+
+  function closeOrganizationEditor() {
+    organizationEditor = null;
+    organizationMediaId = null;
+  }
+
+  async function toggleMediaTag(mediaId: number, tagId: number) {
+    const current = organizationFor(mediaId);
+    const ids = new Set(current.tags.map((tag) => tag.id));
+
+    if (ids.has(tagId)) ids.delete(tagId);
+    else ids.add(tagId);
+
+    try {
+      await invoke("set_media_tags", {
+        mediaId,
+        tagIds: [...ids]
+      });
+
+      await loadOrganization();
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  async function toggleMediaPlaylist(mediaId: number, playlistId: number) {
+    const current = organizationFor(mediaId);
+    const ids = new Set(current.playlists.map((playlist) => playlist.id));
+
+    if (ids.has(playlistId)) ids.delete(playlistId);
+    else ids.add(playlistId);
+
+    try {
+      await invoke("set_media_playlists", {
+        mediaId,
+        playlistIds: [...ids]
+      });
+
+      await loadOrganization();
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  function toggleFilterTag(tagId: number) {
+    const next = new Set(selectedTagIds);
+
+    if (next.has(tagId)) next.delete(tagId);
+    else next.add(tagId);
+
+    selectedTagIds = next;
+    selectedTagId = selectedTagIds.size ? [...selectedTagIds][0] : null;
+  }
+
+  function clearTagFilter() {
+    selectedTagIds = new Set();
+    selectedTagId = null;
+  }
+
+  async function applyImportOrganization() {
+    const ids = media.map((item) => item.id);
+
+    if (!ids.length) return;
+
+    try {
+      await invoke("set_organization_for_media", {
+        mediaIds: ids,
+        tagIds: [...importTagIds],
+        playlistIds: [...importPlaylistIds]
+      });
+
+      await loadOrganization();
+      showImportOrganization = false;
+      importTagIds = new Set();
+      importPlaylistIds = new Set();
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  function toggleImportTag(tagId: number) {
+    const next = new Set(importTagIds);
+
+    if (next.has(tagId)) next.delete(tagId);
+    else next.add(tagId);
+
+    importTagIds = next;
+  }
+
+  function toggleImportPlaylist(playlistId: number) {
+    const next = new Set(importPlaylistIds);
+
+    if (next.has(playlistId)) next.delete(playlistId);
+    else next.add(playlistId);
+
+    importPlaylistIds = next;
+  }
+
   setupNativeDrop();
 
   if (!viewerItem) {
@@ -646,188 +839,6 @@
         console.error("[Medeor] Viewer load failed:", e);
       });
   }
-
-  // ============================================================
-  // Tags + Playlists
-  // ============================================================
-
-  type Tag = {
-    id: number;
-    name: string;
-  };
-
-  type Playlist = {
-    id: number;
-    name: string;
-    created_at: string;
-  };
-
-  let tags: Tag[] = [];
-  let playlists: Playlist[] = [];
-
-  let showTags = false;
-  let showPlaylists = false;
-
-  let newTagName = "";
-  let newPlaylistName = "";
-
-  let selectedTagId: number | null = null;
-  let selectedPlaylistId: number | null = null;
-
-  let tagsLoading = false;
-  let playlistsLoading = false;
-
-  async function loadTags() {
-    tagsLoading = true;
-
-    try {
-      tags = await invoke<Tag[]>("list_tags");
-    } catch (e) {
-      error = String(e);
-    } finally {
-      tagsLoading = false;
-    }
-  }
-
-  async function loadPlaylists() {
-    playlistsLoading = true;
-
-    try {
-      playlists = await invoke<Playlist[]>("list_playlists");
-    } catch (e) {
-      error = String(e);
-    } finally {
-      playlistsLoading = false;
-    }
-  }
-
-  async function createTagFromUi() {
-    const name = newTagName.trim();
-
-    if (!name) return;
-
-    try {
-      await invoke("create_tag", { name });
-      newTagName = "";
-      await loadTags();
-    } catch (e) {
-      error = String(e);
-    }
-  }
-
-  async function deleteTagFromUi(id: number) {
-    try {
-      await invoke("delete_tag", { id });
-
-      if (selectedTagId === id) {
-        selectedTagId = null;
-      }
-
-      await loadTags();
-    } catch (e) {
-      error = String(e);
-    }
-  }
-
-  async function createPlaylistFromUi() {
-    const name = newPlaylistName.trim();
-
-    if (!name) return;
-
-    try {
-      await invoke("create_playlist", { name });
-      newPlaylistName = "";
-      await loadPlaylists();
-    } catch (e) {
-      error = String(e);
-    }
-  }
-
-  async function deletePlaylistFromUi(id: number) {
-    try {
-      await invoke("delete_playlist", { id });
-
-      if (selectedPlaylistId === id) {
-        selectedPlaylistId = null;
-      }
-
-      await loadPlaylists();
-    } catch (e) {
-      error = String(e);
-    }
-  }
-
-  async function tagSelectedMedia() {
-    if (selectedTagId === null || selectedIds.size === 0) return;
-
-    try {
-      for (const mediaId of selectedIds) {
-        await invoke("add_tag_to_media", {
-          mediaId,
-          tagId: selectedTagId
-        });
-      }
-
-      error = "";
-    } catch (e) {
-      error = String(e);
-    }
-  }
-
-  async function untagSelectedMedia() {
-    if (selectedTagId === null || selectedIds.size === 0) return;
-
-    try {
-      for (const mediaId of selectedIds) {
-        await invoke("remove_tag_from_media", {
-          mediaId,
-          tagId: selectedTagId
-        });
-      }
-
-      error = "";
-    } catch (e) {
-      error = String(e);
-    }
-  }
-
-  async function addSelectedToPlaylist() {
-    if (selectedPlaylistId === null || selectedIds.size === 0) return;
-
-    try {
-      for (const mediaId of selectedIds) {
-        await invoke("add_to_playlist", {
-          playlistId: selectedPlaylistId,
-          mediaId
-        });
-      }
-
-      error = "";
-    } catch (e) {
-      error = String(e);
-    }
-  }
-
-  async function removeSelectedFromPlaylist() {
-    if (selectedPlaylistId === null || selectedIds.size === 0) return;
-
-    try {
-      for (const mediaId of selectedIds) {
-        await invoke("remove_from_playlist", {
-          playlistId: selectedPlaylistId,
-          mediaId
-        });
-      }
-
-      error = "";
-    } catch (e) {
-      error = String(e);
-    }
-  }
-
-  // Load these once when the library is initialized.
-  loadTags();
-  loadPlaylists();
 
 </script>
 
@@ -1187,6 +1198,53 @@
         {/if}
       </div>
 
+
+      <div class="sidebar-section tag-filter-section">
+        <div class="sidebar-heading">Filter</div>
+
+        <button
+          class="organization-toggle"
+          class:organization-active={showTagFilter}
+          onclick={() => (showTagFilter = !showTagFilter)}
+        >
+          <span>⌕</span>
+          <span>Filter by tags</span>
+          {#if selectedTagIds.size}
+            <span class="organization-count">{selectedTagIds.size}</span>
+          {/if}
+        </button>
+
+        {#if showTagFilter}
+          <div class="tag-filter-panel">
+            {#if tags.length === 0}
+              <div class="organization-empty">
+                Create a tag to start filtering.
+              </div>
+            {:else}
+              {#each tags as tag}
+                <button
+                  class="filter-tag-row"
+                  class:filter-tag-selected={selectedTagIds.has(tag.id)}
+                  onclick={() => toggleFilterTag(tag.id)}
+                >
+                  <span>{selectedTagIds.has(tag.id) ? "✓" : "○"}</span>
+                  <span>{tag.name}</span>
+                </button>
+              {/each}
+
+              {#if selectedTagIds.size}
+                <button
+                  class="filter-clear"
+                  onclick={clearTagFilter}
+                >
+                  Clear filters
+                </button>
+              {/if}
+            {/if}
+          </div>
+        {/if}
+      </div>
+
       <div class="sidebar-footer">
         <button class="settings-button">
           <span>⚙</span>
@@ -1341,10 +1399,51 @@
                       {/if}
 
                       <div class="media-hover-info">
+                        {#if organizationFor(item).tags.length || organizationFor(item).playlists.length}
+                          <div class="organization-badges">
+                            {#each organizationFor(item).tags.slice(0, 3) as tag}
+                              <span class="organization-badge tag-badge">
+                                #{tag.name}
+                              </span>
+                            {/each}
+
+                            {#if organizationFor(item).tags.length > 3}
+                              <span class="organization-badge muted-badge">
+                                +{organizationFor(item).tags.length - 3}
+                              </span>
+                            {/if}
+
+                            {#if organizationFor(item).playlists.length}
+                              <span class="organization-badge playlist-badge">
+                                ♫ {organizationFor(item).playlists[0].name}
+                              </span>
+                            {/if}
+                          </div>
+                        {/if}
                         <div class="media-name">{item.name}</div>
                         <div class="media-meta">
                           {item.media_type} · {formatSize(item.size)}
                         </div>
+                        {#if organizationFor(item.id).tags.length || organizationFor(item.id).playlists.length}
+                          <div class="organization-hover">
+                            {#each organizationFor(item.id).tags.slice(0, 3) as tag}
+                              <span class="media-tag-chip">#{tag.name}</span>
+                            {/each}
+
+                            {#if organizationFor(item.id).tags.length > 3}
+                              <span class="media-tag-more">
+                                +{organizationFor(item.id).tags.length - 3}
+                              </span>
+                            {/if}
+
+                            {#if organizationFor(item.id).playlists.length}
+                              <span class="media-playlist-chip">
+                                ♫ {organizationFor(item.id).playlists[0].name}
+                              </span>
+                            {/if}
+                          </div>
+                        {/if}
+
                       </div>
                     </div>
                   </button>
@@ -1450,6 +1549,87 @@
               Browse Files
             </button>
           </div>
+
+
+          {#if media.length > 0}
+            <div class="import-organization-card">
+              <div class="import-organization-heading">
+                <div>
+                  <strong>Organize this import</strong>
+                  <p>
+                    Apply tags and playlists to everything imported in this batch.
+                  </p>
+                </div>
+
+                <button
+                  class="secondary-button"
+                  onclick={() => showImportOrganization = !showImportOrganization}
+                >
+                  {showImportOrganization ? "Hide options" : "Set options"}
+                </button>
+              </div>
+
+              {#if showImportOrganization}
+                <div class="import-organization-options">
+                  <div>
+                    <div class="organization-option-heading">Tags</div>
+
+                    <div class="import-option-list">
+                      {#each tags as tag}
+                        <button
+                          class="import-option"
+                          class:import-option-selected={importTagIds.has(tag.id)}
+                          onclick={() => toggleImportTag(tag.id)}
+                        >
+                          {importTagIds.has(tag.id) ? "✓" : "○"}
+                          #{tag.name}
+                        </button>
+                      {/each}
+
+                      {#if tags.length === 0}
+                        <span class="organization-empty">
+                          No tags available.
+                        </span>
+                      {/if}
+                    </div>
+                  </div>
+
+                  <div>
+                    <div class="organization-option-heading">Playlists</div>
+
+                    <div class="import-option-list">
+                      {#each playlists as playlist}
+                        <button
+                          class="import-option"
+                          class:import-option-selected={importPlaylistIds.has(playlist.id)}
+                          onclick={() => toggleImportPlaylist(playlist.id)}
+                        >
+                          {importPlaylistIds.has(playlist.id) ? "✓" : "○"}
+                          ♫ {playlist.name}
+                        </button>
+                      {/each}
+
+                      {#if playlists.length === 0}
+                        <span class="organization-empty">
+                          No playlists available.
+                        </span>
+                      {/if}
+                    </div>
+                  </div>
+
+                  <div class="import-organization-actions">
+                    <button
+                      class="secondary-button"
+                      onclick={applyImportOrganization}
+                      disabled={!importTagIds.size && !importPlaylistIds.size}
+                    >
+                      Apply to {media.length} item{media.length === 1 ? "" : "s"}
+                    </button>
+                  </div>
+                </div>
+              {/if}
+            </div>
+          {/if}
 
           <div class="import-note">
             <span class="note-icon">✦</span>
@@ -1626,6 +1806,111 @@
   {/if}
 
 
+
+  {#if organizationEditor && organizationMediaId !== null}
+    <div
+      class="organization-editor-backdrop"
+      role="presentation"
+      onclick={(event) => {
+        if (event.target === event.currentTarget) {
+          closeOrganizationEditor();
+        }
+      }}
+    >
+      <div class="organization-editor" role="dialog" aria-modal="true">
+        <div class="organization-editor-header">
+          <div>
+            <div class="eyebrow">ORGANIZE MEDIA</div>
+            <h2>
+              {organizationEditor === "tags" ? "Edit Tags" : "Add to Playlist"}
+            </h2>
+          </div>
+
+          <button
+            class="organization-editor-close"
+            aria-label="Close"
+            onclick={closeOrganizationEditor}
+          >
+            ×
+          </button>
+        </div>
+
+        {#if organizationEditor === "tags"}
+          <p class="organization-editor-help">
+            Click a tag to add or remove it from this item.
+            Selected tags are highlighted.
+          </p>
+
+          <div class="organization-picker">
+            {#if tags.length === 0}
+              <div class="organization-empty">
+                No tags yet. Create one in the sidebar.
+              </div>
+            {:else}
+              {#each tags as tag}
+                {@const applied = organizationFor(organizationMediaId).tags.some(
+                  (item) => item.id === tag.id
+                )}
+
+                <button
+                  class="organization-picker-row"
+                  class:organization-picker-selected={applied}
+                  onclick={() => toggleMediaTag(organizationMediaId, tag.id)}
+                >
+                  <span class="organization-picker-check">
+                    {applied ? "✓" : "○"}
+                  </span>
+                  <span>#{tag.name}</span>
+                  {#if applied}
+                    <span class="organization-picker-state">Applied</span>
+                  {/if}
+                </button>
+              {/each}
+            {/if}
+          </div>
+        {:else}
+          <p class="organization-editor-help">
+            Choose which playlists should contain this media.
+          </p>
+
+          <div class="organization-picker">
+            {#if playlists.length === 0}
+              <div class="organization-empty">
+                No playlists yet. Create one in the sidebar.
+              </div>
+            {:else}
+              {#each playlists as playlist}
+                {@const applied = organizationFor(organizationMediaId).playlists.some(
+                  (item) => item.id === playlist.id
+                )}
+
+                <button
+                  class="organization-picker-row"
+                  class:organization-picker-selected={applied}
+                  onclick={() => toggleMediaPlaylist(organizationMediaId, playlist.id)}
+                >
+                  <span class="organization-picker-check">
+                    {applied ? "✓" : "○"}
+                  </span>
+                  <span>♫ {playlist.name}</span>
+                  {#if applied}
+                    <span class="organization-picker-state">Added</span>
+                  {/if}
+                </button>
+              {/each}
+            {/if}
+          </div>
+        {/if}
+
+        <div class="organization-editor-footer">
+          <button class="secondary-button" onclick={closeOrganizationEditor}>
+            Done
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
   {#if deleteTarget || deleteTargets.length}
     <div
       class="modal-backdrop"
@@ -1673,6 +1958,119 @@
       </div>
     </div>
   {/if}
+
+{#if organizationDialog}
+  <div
+    class="modal-backdrop organization-dialog-backdrop"
+    role="presentation"
+    onclick={(event) => {
+      if (event.target === event.currentTarget) {
+        organizationDialog = null;
+      }
+    }}
+  >
+    <div class="organization-dialog" role="dialog" aria-modal="true">
+      <div class="organization-dialog-header">
+        <div>
+          <div class="eyebrow">
+            {organizationDialog.kind === "tags" ? "TAGS" : "PLAYLIST"}
+          </div>
+
+          <h2>
+            {organizationDialog.kind === "tags"
+              ? "Organize tags"
+              : "Add to playlist"}
+          </h2>
+
+          <p>{organizationDialog.media.name}</p>
+        </div>
+
+        <button
+          class="organization-dialog-close"
+          aria-label="Close"
+          onclick={() => (organizationDialog = null)}
+        >
+          ×
+        </button>
+      </div>
+
+      {#if organizationDialog.kind === "tags"}
+        <div class="organization-dialog-list">
+          {#if tags.length === 0}
+            <div class="organization-dialog-empty">
+              No tags yet. Create one from the Tags section.
+            </div>
+          {:else}
+            {#each tags as tag}
+              <button
+                class="organization-choice"
+                class:organization-choice-active={tagIsApplied(
+                  organizationDialog.media,
+                  tag
+                )}
+                onclick={() => toggleMediaTag(tag)}
+                disabled={organizationLoading}
+              >
+                <span class="organization-choice-check">
+                  {tagIsApplied(organizationDialog.media, tag) ? "✓" : ""}
+                </span>
+
+                <span>#{tag.name}</span>
+
+                <span class="organization-choice-state">
+                  {tagIsApplied(organizationDialog.media, tag)
+                    ? "Applied"
+                    : "Add"}
+                </span>
+              </button>
+            {/each}
+          {/if}
+        </div>
+      {:else}
+        <div class="organization-dialog-list">
+          {#if playlists.length === 0}
+            <div class="organization-dialog-empty">
+              No playlists yet. Create one from the Playlists section.
+            </div>
+          {:else}
+            {#each playlists as playlist}
+              <button
+                class="organization-choice"
+                class:organization-choice-active={playlistIsApplied(
+                  organizationDialog.media,
+                  playlist
+                )}
+                onclick={() => toggleMediaPlaylist(playlist)}
+                disabled={organizationLoading}
+              >
+                <span class="organization-choice-check">
+                  {playlistIsApplied(
+                    organizationDialog.media,
+                    playlist
+                  )
+                    ? "✓"
+                    : ""}
+                </span>
+
+                <span>♫ {playlist.name}</span>
+
+                <span class="organization-choice-state">
+                  {playlistIsApplied(
+                    organizationDialog.media,
+                    playlist
+                  )
+                    ? "Added"
+                    : "Add"}
+                </span>
+              </button>
+            {/each}
+          {/if}
+        </div>
+      {/if}
+    </div>
+  </div>
+{/if}
+
 {/if}
 
 
@@ -2084,46 +2482,435 @@
   }
 
 
-/* Stable media-card preview sizing.
-   Images/videos must never determine the card or grid-row height. */
-.media-card {
-  min-width: 0;
-  min-height: 0;
+/* organization UX */
+
+.organization-hover {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+  margin-top: 7px;
+  opacity: 0;
+  transform: translateY(3px);
+  transition: opacity 140ms ease, transform 140ms ease;
+  pointer-events: none;
 }
 
-.media-open {
-  display: block;
-  width: 100%;
-  min-width: 0;
-  min-height: 0;
+.media-card:hover .organization-hover {
+  opacity: 1;
+  transform: translateY(0);
 }
 
-.media-preview {
-  position: relative;
-  width: 100%;
-  aspect-ratio: 16 / 10;
-  min-height: 0;
+.media-tag-chip,
+.media-playlist-chip,
+.media-tag-more {
+  display: inline-flex;
+  align-items: center;
+  max-width: 150px;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: rgba(255,255,255,.075);
+  border: 1px solid rgba(255,255,255,.08);
+  color: rgba(255,255,255,.72);
+  font-size: 11px;
+  line-height: 1.2;
+  white-space: nowrap;
   overflow: hidden;
-  background: #111;
+  text-overflow: ellipsis;
 }
 
-.media-preview > img,
-.media-preview > video,
-.media-preview .preview-video {
-  display: block;
+.media-playlist-chip {
+  color: rgba(205,190,255,.86);
+}
+
+.media-tag-more {
+  color: rgba(255,255,255,.48);
+}
+
+.tag-filter-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 7px;
+  padding: 6px;
+  border-radius: 10px;
+  background: rgba(255,255,255,.035);
+}
+
+.filter-tag-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   width: 100%;
-  height: 100%;
-  min-width: 0;
-  min-height: 0;
-  object-fit: cover;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: rgba(255,255,255,.67);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
 }
 
-.media-hover-info {
-  position: absolute;
-  inset: auto 0 0 0;
-  z-index: 2;
+.filter-tag-row:hover {
+  background: rgba(255,255,255,.06);
+  color: white;
 }
 
+.filter-tag-selected {
+  background: rgba(157,130,255,.13);
+  color: rgba(220,210,255,.98);
+}
+
+.filter-clear {
+  margin-top: 4px;
+  padding: 6px;
+  border: 0;
+  background: transparent;
+  color: rgba(190,175,255,.8);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+}
+
+.organization-editor-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(0,0,0,.58);
+  backdrop-filter: blur(8px);
+}
+
+.organization-editor {
+  width: min(460px, 100%);
+  max-height: min(680px, 90vh);
+  overflow: auto;
+  border: 1px solid rgba(255,255,255,.1);
+  border-radius: 18px;
+  background: #17171c;
+  box-shadow: 0 24px 70px rgba(0,0,0,.45);
+}
+
+.organization-editor-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 22px 22px 8px;
+}
+
+.organization-editor-header h2 {
+  margin: 4px 0 0;
+  font-size: 21px;
+}
+
+.organization-editor-close {
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 8px;
+  background: rgba(255,255,255,.06);
+  color: rgba(255,255,255,.65);
+  cursor: pointer;
+  font-size: 20px;
+}
+
+.organization-editor-help {
+  margin: 0;
+  padding: 0 22px 14px;
+  color: rgba(255,255,255,.5);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.organization-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0 14px;
+}
+
+.organization-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 42px;
+  padding: 9px 10px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: rgba(255,255,255,.72);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  font-size: 13px;
+}
+
+.organization-picker-row:hover {
+  background: rgba(255,255,255,.055);
+}
+
+.organization-picker-selected {
+  border-color: rgba(157,130,255,.2);
+  background: rgba(157,130,255,.11);
+  color: white;
+}
+
+.organization-picker-check {
+  width: 18px;
+  color: rgba(255,255,255,.35);
+}
+
+.organization-picker-selected .organization-picker-check {
+  color: #bba8ff;
+}
+
+.organization-picker-state {
+  margin-left: auto;
+  color: rgba(190,175,255,.75);
+  font-size: 11px;
+}
+
+.organization-editor-footer {
+  display: flex;
+  justify-content: flex-end;
+  padding: 16px 22px 20px;
+}
+
+.import-organization-card {
+  margin-bottom: 18px;
+  padding: 16px;
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 13px;
+  background: rgba(255,255,255,.025);
+}
+
+.import-organization-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.import-organization-heading strong {
+  display: block;
+  margin-bottom: 4px;
+}
+
+.import-organization-heading p {
+  margin: 0;
+  color: rgba(255,255,255,.48);
+  font-size: 12px;
+}
+
+.import-organization-options {
+  display: grid;
+  gap: 16px;
+  margin-top: 16px;
+  padding-top: 15px;
+  border-top: 1px solid rgba(255,255,255,.07);
+}
+
+.organization-option-heading {
+  margin-bottom: 7px;
+  color: rgba(255,255,255,.62);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+}
+
+.import-option-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.import-option {
+  padding: 7px 10px;
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 999px;
+  background: rgba(255,255,255,.035);
+  color: rgba(255,255,255,.62);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+
+.import-option:hover {
+  background: rgba(255,255,255,.07);
+}
+
+.import-option-selected {
+  border-color: rgba(157,130,255,.35);
+  background: rgba(157,130,255,.14);
+  color: rgba(225,218,255,.98);
+}
+
+.import-organization-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* ============================================================
+     Medeor organization UX
+     ============================================================ */
+
+  .organization-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin-top: 7px;
+    max-width: 100%;
+  }
+
+  .organization-badge {
+    display: inline-flex;
+    align-items: center;
+    max-width: 180px;
+    padding: 3px 7px;
+    border-radius: 999px;
+    font-size: 11px;
+    line-height: 1.2;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .tag-badge {
+    color: #e8e2ff;
+    background: rgba(126, 92, 255, 0.25);
+    border: 1px solid rgba(150, 120, 255, 0.28);
+  }
+
+  .playlist-badge {
+    color: #dff8ee;
+    background: rgba(42, 145, 112, 0.24);
+    border: 1px solid rgba(76, 190, 150, 0.25);
+  }
+
+  .muted-badge {
+    color: rgba(255,255,255,.62);
+    background: rgba(255,255,255,.07);
+  }
+
+  .organization-dialog {
+    width: min(520px, calc(100vw - 32px));
+    max-height: min(680px, calc(100vh - 48px));
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    background: #17151f;
+    border: 1px solid rgba(255,255,255,.10);
+    border-radius: 18px;
+    box-shadow: 0 30px 90px rgba(0,0,0,.55);
+  }
+
+  .organization-dialog-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 20px;
+    padding: 22px 22px 16px;
+    border-bottom: 1px solid rgba(255,255,255,.07);
+  }
+
+  .organization-dialog-header h2 {
+    margin: 3px 0 4px;
+    font-size: 21px;
+  }
+
+  .organization-dialog-header p {
+    margin: 0;
+    max-width: 390px;
+    color: rgba(255,255,255,.55);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .organization-dialog-close {
+    width: 34px;
+    height: 34px;
+    border: 0;
+    border-radius: 9px;
+    color: rgba(255,255,255,.7);
+    background: rgba(255,255,255,.06);
+    cursor: pointer;
+    font-size: 22px;
+  }
+
+  .organization-dialog-close:hover {
+    background: rgba(255,255,255,.10);
+    color: white;
+  }
+
+  .organization-dialog-list {
+    padding: 12px;
+    overflow-y: auto;
+  }
+
+  .organization-choice {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 30px minmax(0,1fr) auto;
+    align-items: center;
+    gap: 10px;
+    padding: 11px 12px;
+    margin-bottom: 5px;
+    border: 1px solid transparent;
+    border-radius: 11px;
+    background: transparent;
+    color: rgba(255,255,255,.82);
+    text-align: left;
+    cursor: pointer;
+    transition: background .15s ease, border-color .15s ease;
+  }
+
+  .organization-choice:hover {
+    background: rgba(255,255,255,.055);
+  }
+
+  .organization-choice-active {
+    background: rgba(126,92,255,.11);
+    border-color: rgba(126,92,255,.24);
+  }
+
+  .organization-choice-check {
+    width: 22px;
+    height: 22px;
+    display: grid;
+    place-items: center;
+    border-radius: 7px;
+    background: rgba(255,255,255,.07);
+    color: #bcaaff;
+    font-weight: 700;
+  }
+
+  .organization-choice-active .organization-choice-check {
+    background: #7657ed;
+    color: white;
+  }
+
+  .organization-choice-state {
+    color: rgba(255,255,255,.42);
+    font-size: 12px;
+  }
+
+  .organization-choice-active .organization-choice-state {
+    color: #bcaaff;
+  }
+
+  .organization-dialog-empty {
+    padding: 30px 18px;
+    text-align: center;
+    color: rgba(255,255,255,.48);
+  }
 </style>
 
 

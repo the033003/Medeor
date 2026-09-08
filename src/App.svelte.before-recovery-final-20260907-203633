@@ -633,6 +633,193 @@
     return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
   }
 
+
+  type Tag = {
+    id: number;
+    name: string;
+  };
+
+  type Playlist = {
+    id: number;
+    name: string;
+    created_at: string;
+  };
+
+  type MediaOrganization = {
+    media_id: number;
+    tags: Tag[];
+    playlists: Playlist[];
+  };
+
+  let tags: Tag[] = [];
+  let playlists: Playlist[] = [];
+  let mediaOrganization: Record<number, MediaOrganization> = {};
+
+  let showTags = false;
+  let showPlaylists = false;
+  let showTagFilter = false;
+  let selectedTagId: number | null = null;
+  let selectedTagIds = new Set<number>();
+
+  let organizationEditor: "tags" | "playlists" | null = null;
+  let organizationMediaId: number | null = null;
+
+  let importTagIds = new Set<number>();
+  let importPlaylistIds = new Set<number>();
+  let showImportOrganization = false;
+
+  async function loadOrganization() {
+    try {
+      const [loadedTags, loadedPlaylists, organization] = await Promise.all([
+        invoke<Tag[]>("list_tags"),
+        invoke<Playlist[]>("list_playlists"),
+        invoke<MediaOrganization[]>("list_media_organization")
+      ]);
+
+      tags = loadedTags;
+      playlists = loadedPlaylists;
+
+      const next: Record<number, MediaOrganization> = {};
+      for (const item of organization) {
+        next[item.media_id] = item;
+      }
+
+      mediaOrganization = next;
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  function organizationFor(id: number): MediaOrganization {
+    return mediaOrganization[id] || {
+      media_id: id,
+      tags: [],
+      playlists: []
+    };
+  }
+
+  function filteredMedia() {
+    if (selectedTagIds.size === 0) return media;
+
+    return media.filter((item) => {
+      const assigned = new Set(
+        organizationFor(item.id).tags.map((tag) => tag.id)
+      );
+
+      for (const tagId of selectedTagIds) {
+        if (!assigned.has(tagId)) return false;
+      }
+
+      return true;
+    });
+  }
+
+  function openOrganizationEditor(
+    mediaId: number,
+    kind: "tags" | "playlists"
+  ) {
+    organizationMediaId = mediaId;
+    organizationEditor = kind;
+    openMenuId = null;
+  }
+
+  function closeOrganizationEditor() {
+    organizationEditor = null;
+    organizationMediaId = null;
+  }
+
+  async function toggleMediaTag(mediaId: number, tagId: number) {
+    const current = organizationFor(mediaId);
+    const ids = new Set(current.tags.map((tag) => tag.id));
+
+    if (ids.has(tagId)) ids.delete(tagId);
+    else ids.add(tagId);
+
+    try {
+      await invoke("set_media_tags", {
+        mediaId,
+        tagIds: [...ids]
+      });
+
+      await loadOrganization();
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  async function toggleMediaPlaylist(mediaId: number, playlistId: number) {
+    const current = organizationFor(mediaId);
+    const ids = new Set(current.playlists.map((playlist) => playlist.id));
+
+    if (ids.has(playlistId)) ids.delete(playlistId);
+    else ids.add(playlistId);
+
+    try {
+      await invoke("set_media_playlists", {
+        mediaId,
+        playlistIds: [...ids]
+      });
+
+      await loadOrganization();
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  function toggleFilterTag(tagId: number) {
+    const next = new Set(selectedTagIds);
+
+    if (next.has(tagId)) next.delete(tagId);
+    else next.add(tagId);
+
+    selectedTagIds = next;
+    selectedTagId = selectedTagIds.size ? [...selectedTagIds][0] : null;
+  }
+
+  function clearTagFilter() {
+    selectedTagIds = new Set();
+    selectedTagId = null;
+  }
+
+  async function applyImportOrganization() {
+    const ids = media.map((item) => item.id);
+
+    if (!ids.length) return;
+
+    try {
+      await invoke("set_organization_for_media", {
+        mediaIds: ids,
+        tagIds: [...importTagIds],
+        playlistIds: [...importPlaylistIds]
+      });
+
+      await loadOrganization();
+      showImportOrganization = false;
+      importTagIds = new Set();
+      importPlaylistIds = new Set();
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  function toggleImportTag(tagId: number) {
+    const next = new Set(importTagIds);
+
+    if (next.has(tagId)) next.delete(tagId);
+    else next.add(tagId);
+
+    importTagIds = next;
+  }
+
+  function toggleImportPlaylist(playlistId: number) {
+    const next = new Set(importPlaylistIds);
+
+    if (next.has(playlistId)) next.delete(playlistId);
+    else next.add(playlistId);
+
+    importPlaylistIds = next;
+  }
+
   setupNativeDrop();
 
   if (!viewerItem) {
@@ -1187,6 +1374,53 @@
         {/if}
       </div>
 
+
+      <div class="sidebar-section tag-filter-section">
+        <div class="sidebar-heading">Filter</div>
+
+        <button
+          class="organization-toggle"
+          class:organization-active={showTagFilter}
+          onclick={() => (showTagFilter = !showTagFilter)}
+        >
+          <span>⌕</span>
+          <span>Filter by tags</span>
+          {#if selectedTagIds.size}
+            <span class="organization-count">{selectedTagIds.size}</span>
+          {/if}
+        </button>
+
+        {#if showTagFilter}
+          <div class="tag-filter-panel">
+            {#if tags.length === 0}
+              <div class="organization-empty">
+                Create a tag to start filtering.
+              </div>
+            {:else}
+              {#each tags as tag}
+                <button
+                  class="filter-tag-row"
+                  class:filter-tag-selected={selectedTagIds.has(tag.id)}
+                  onclick={() => toggleFilterTag(tag.id)}
+                >
+                  <span>{selectedTagIds.has(tag.id) ? "✓" : "○"}</span>
+                  <span>{tag.name}</span>
+                </button>
+              {/each}
+
+              {#if selectedTagIds.size}
+                <button
+                  class="filter-clear"
+                  onclick={clearTagFilter}
+                >
+                  Clear filters
+                </button>
+              {/if}
+            {/if}
+          </div>
+        {/if}
+      </div>
+
       <div class="sidebar-footer">
         <button class="settings-button">
           <span>⚙</span>
@@ -1345,6 +1579,26 @@
                         <div class="media-meta">
                           {item.media_type} · {formatSize(item.size)}
                         </div>
+                        {#if organizationFor(item.id).tags.length || organizationFor(item.id).playlists.length}
+                          <div class="organization-hover">
+                            {#each organizationFor(item.id).tags.slice(0, 3) as tag}
+                              <span class="media-tag-chip">#{tag.name}</span>
+                            {/each}
+
+                            {#if organizationFor(item.id).tags.length > 3}
+                              <span class="media-tag-more">
+                                +{organizationFor(item.id).tags.length - 3}
+                              </span>
+                            {/if}
+
+                            {#if organizationFor(item.id).playlists.length}
+                              <span class="media-playlist-chip">
+                                ♫ {organizationFor(item.id).playlists[0].name}
+                              </span>
+                            {/if}
+                          </div>
+                        {/if}
+
                       </div>
                     </div>
                   </button>
@@ -1450,6 +1704,87 @@
               Browse Files
             </button>
           </div>
+
+
+          {#if media.length > 0}
+            <div class="import-organization-card">
+              <div class="import-organization-heading">
+                <div>
+                  <strong>Organize this import</strong>
+                  <p>
+                    Apply tags and playlists to everything imported in this batch.
+                  </p>
+                </div>
+
+                <button
+                  class="secondary-button"
+                  onclick={() => showImportOrganization = !showImportOrganization}
+                >
+                  {showImportOrganization ? "Hide options" : "Set options"}
+                </button>
+              </div>
+
+              {#if showImportOrganization}
+                <div class="import-organization-options">
+                  <div>
+                    <div class="organization-option-heading">Tags</div>
+
+                    <div class="import-option-list">
+                      {#each tags as tag}
+                        <button
+                          class="import-option"
+                          class:import-option-selected={importTagIds.has(tag.id)}
+                          onclick={() => toggleImportTag(tag.id)}
+                        >
+                          {importTagIds.has(tag.id) ? "✓" : "○"}
+                          #{tag.name}
+                        </button>
+                      {/each}
+
+                      {#if tags.length === 0}
+                        <span class="organization-empty">
+                          No tags available.
+                        </span>
+                      {/if}
+                    </div>
+                  </div>
+
+                  <div>
+                    <div class="organization-option-heading">Playlists</div>
+
+                    <div class="import-option-list">
+                      {#each playlists as playlist}
+                        <button
+                          class="import-option"
+                          class:import-option-selected={importPlaylistIds.has(playlist.id)}
+                          onclick={() => toggleImportPlaylist(playlist.id)}
+                        >
+                          {importPlaylistIds.has(playlist.id) ? "✓" : "○"}
+                          ♫ {playlist.name}
+                        </button>
+                      {/each}
+
+                      {#if playlists.length === 0}
+                        <span class="organization-empty">
+                          No playlists available.
+                        </span>
+                      {/if}
+                    </div>
+                  </div>
+
+                  <div class="import-organization-actions">
+                    <button
+                      class="secondary-button"
+                      onclick={applyImportOrganization}
+                      disabled={!importTagIds.size && !importPlaylistIds.size}
+                    >
+                      Apply to {media.length} item{media.length === 1 ? "" : "s"}
+                    </button>
+                  </div>
+                </div>
+              {/if}
+            </div>
+          {/if}
 
           <div class="import-note">
             <span class="note-icon">✦</span>
@@ -1625,6 +1960,111 @@
     </div>
   {/if}
 
+
+
+  {#if organizationEditor && organizationMediaId !== null}
+    <div
+      class="organization-editor-backdrop"
+      role="presentation"
+      onclick={(event) => {
+        if (event.target === event.currentTarget) {
+          closeOrganizationEditor();
+        }
+      }}
+    >
+      <div class="organization-editor" role="dialog" aria-modal="true">
+        <div class="organization-editor-header">
+          <div>
+            <div class="eyebrow">ORGANIZE MEDIA</div>
+            <h2>
+              {organizationEditor === "tags" ? "Edit Tags" : "Add to Playlist"}
+            </h2>
+          </div>
+
+          <button
+            class="organization-editor-close"
+            aria-label="Close"
+            onclick={closeOrganizationEditor}
+          >
+            ×
+          </button>
+        </div>
+
+        {#if organizationEditor === "tags"}
+          <p class="organization-editor-help">
+            Click a tag to add or remove it from this item.
+            Selected tags are highlighted.
+          </p>
+
+          <div class="organization-picker">
+            {#if tags.length === 0}
+              <div class="organization-empty">
+                No tags yet. Create one in the sidebar.
+              </div>
+            {:else}
+              {#each tags as tag}
+                {@const applied = organizationFor(organizationMediaId).tags.some(
+                  (item) => item.id === tag.id
+                )}
+
+                <button
+                  class="organization-picker-row"
+                  class:organization-picker-selected={applied}
+                  onclick={() => toggleMediaTag(organizationMediaId, tag.id)}
+                >
+                  <span class="organization-picker-check">
+                    {applied ? "✓" : "○"}
+                  </span>
+                  <span>#{tag.name}</span>
+                  {#if applied}
+                    <span class="organization-picker-state">Applied</span>
+                  {/if}
+                </button>
+              {/each}
+            {/if}
+          </div>
+        {:else}
+          <p class="organization-editor-help">
+            Choose which playlists should contain this media.
+          </p>
+
+          <div class="organization-picker">
+            {#if playlists.length === 0}
+              <div class="organization-empty">
+                No playlists yet. Create one in the sidebar.
+              </div>
+            {:else}
+              {#each playlists as playlist}
+                {@const applied = organizationFor(organizationMediaId).playlists.some(
+                  (item) => item.id === playlist.id
+                )}
+
+                <button
+                  class="organization-picker-row"
+                  class:organization-picker-selected={applied}
+                  onclick={() => toggleMediaPlaylist(organizationMediaId, playlist.id)}
+                >
+                  <span class="organization-picker-check">
+                    {applied ? "✓" : "○"}
+                  </span>
+                  <span>♫ {playlist.name}</span>
+                  {#if applied}
+                    <span class="organization-picker-state">Added</span>
+                  {/if}
+                </button>
+              {/each}
+            {/if}
+          </div>
+        {/if}
+
+        <div class="organization-editor-footer">
+          <button class="secondary-button" onclick={closeOrganizationEditor}>
+            Done
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
 
   {#if deleteTarget || deleteTargets.length}
     <div
@@ -2084,44 +2524,279 @@
   }
 
 
-/* Stable media-card preview sizing.
-   Images/videos must never determine the card or grid-row height. */
-.media-card {
-  min-width: 0;
-  min-height: 0;
+/* organization UX */
+
+.organization-hover {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+  margin-top: 7px;
+  opacity: 0;
+  transform: translateY(3px);
+  transition: opacity 140ms ease, transform 140ms ease;
+  pointer-events: none;
 }
 
-.media-open {
-  display: block;
-  width: 100%;
-  min-width: 0;
-  min-height: 0;
+.media-card:hover .organization-hover {
+  opacity: 1;
+  transform: translateY(0);
 }
 
-.media-preview {
-  position: relative;
-  width: 100%;
-  aspect-ratio: 16 / 10;
-  min-height: 0;
+.media-tag-chip,
+.media-playlist-chip,
+.media-tag-more {
+  display: inline-flex;
+  align-items: center;
+  max-width: 150px;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: rgba(255,255,255,.075);
+  border: 1px solid rgba(255,255,255,.08);
+  color: rgba(255,255,255,.72);
+  font-size: 11px;
+  line-height: 1.2;
+  white-space: nowrap;
   overflow: hidden;
-  background: #111;
+  text-overflow: ellipsis;
 }
 
-.media-preview > img,
-.media-preview > video,
-.media-preview .preview-video {
-  display: block;
+.media-playlist-chip {
+  color: rgba(205,190,255,.86);
+}
+
+.media-tag-more {
+  color: rgba(255,255,255,.48);
+}
+
+.tag-filter-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 7px;
+  padding: 6px;
+  border-radius: 10px;
+  background: rgba(255,255,255,.035);
+}
+
+.filter-tag-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   width: 100%;
-  height: 100%;
-  min-width: 0;
-  min-height: 0;
-  object-fit: cover;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: rgba(255,255,255,.67);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
 }
 
-.media-hover-info {
-  position: absolute;
-  inset: auto 0 0 0;
-  z-index: 2;
+.filter-tag-row:hover {
+  background: rgba(255,255,255,.06);
+  color: white;
+}
+
+.filter-tag-selected {
+  background: rgba(157,130,255,.13);
+  color: rgba(220,210,255,.98);
+}
+
+.filter-clear {
+  margin-top: 4px;
+  padding: 6px;
+  border: 0;
+  background: transparent;
+  color: rgba(190,175,255,.8);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+}
+
+.organization-editor-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(0,0,0,.58);
+  backdrop-filter: blur(8px);
+}
+
+.organization-editor {
+  width: min(460px, 100%);
+  max-height: min(680px, 90vh);
+  overflow: auto;
+  border: 1px solid rgba(255,255,255,.1);
+  border-radius: 18px;
+  background: #17171c;
+  box-shadow: 0 24px 70px rgba(0,0,0,.45);
+}
+
+.organization-editor-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 22px 22px 8px;
+}
+
+.organization-editor-header h2 {
+  margin: 4px 0 0;
+  font-size: 21px;
+}
+
+.organization-editor-close {
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 8px;
+  background: rgba(255,255,255,.06);
+  color: rgba(255,255,255,.65);
+  cursor: pointer;
+  font-size: 20px;
+}
+
+.organization-editor-help {
+  margin: 0;
+  padding: 0 22px 14px;
+  color: rgba(255,255,255,.5);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.organization-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0 14px;
+}
+
+.organization-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 42px;
+  padding: 9px 10px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: rgba(255,255,255,.72);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  font-size: 13px;
+}
+
+.organization-picker-row:hover {
+  background: rgba(255,255,255,.055);
+}
+
+.organization-picker-selected {
+  border-color: rgba(157,130,255,.2);
+  background: rgba(157,130,255,.11);
+  color: white;
+}
+
+.organization-picker-check {
+  width: 18px;
+  color: rgba(255,255,255,.35);
+}
+
+.organization-picker-selected .organization-picker-check {
+  color: #bba8ff;
+}
+
+.organization-picker-state {
+  margin-left: auto;
+  color: rgba(190,175,255,.75);
+  font-size: 11px;
+}
+
+.organization-editor-footer {
+  display: flex;
+  justify-content: flex-end;
+  padding: 16px 22px 20px;
+}
+
+.import-organization-card {
+  margin-bottom: 18px;
+  padding: 16px;
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 13px;
+  background: rgba(255,255,255,.025);
+}
+
+.import-organization-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.import-organization-heading strong {
+  display: block;
+  margin-bottom: 4px;
+}
+
+.import-organization-heading p {
+  margin: 0;
+  color: rgba(255,255,255,.48);
+  font-size: 12px;
+}
+
+.import-organization-options {
+  display: grid;
+  gap: 16px;
+  margin-top: 16px;
+  padding-top: 15px;
+  border-top: 1px solid rgba(255,255,255,.07);
+}
+
+.organization-option-heading {
+  margin-bottom: 7px;
+  color: rgba(255,255,255,.62);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+}
+
+.import-option-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.import-option {
+  padding: 7px 10px;
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 999px;
+  background: rgba(255,255,255,.035);
+  color: rgba(255,255,255,.62);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+
+.import-option:hover {
+  background: rgba(255,255,255,.07);
+}
+
+.import-option-selected {
+  border-color: rgba(157,130,255,.35);
+  background: rgba(157,130,255,.14);
+  color: rgba(225,218,255,.98);
+}
+
+.import-organization-actions {
+  display: flex;
+  justify-content: flex-end;
 }
 
 </style>
