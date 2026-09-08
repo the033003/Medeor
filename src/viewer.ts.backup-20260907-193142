@@ -64,14 +64,12 @@ if (!filePath) {
     video.className = "viewer-media";
     video.controls = true;
     video.autoplay = false;
-    video.loop = true;
+    video.loop = false;
     video.playsInline = true;
-    video.preload = "metadata";
+    video.preload = "auto";
 
     video.addEventListener("error", () => {
       console.error("[Medeor Viewer] Video error:", video.error);
-      console.error("[Medeor Viewer] File:", filePath);
-
       showError(
         `Unable to play video<br><small>${escapeHtml(filePath)}</small>`
       );
@@ -90,32 +88,34 @@ if (!filePath) {
 
     stage.appendChild(video);
 
-    console.log(
-      "[Medeor Viewer] Requesting media server port..."
-    );
+    console.log("[Medeor Viewer] Loading video through Tauri IPC:", filePath);
 
-    invoke<number>("media_server_port")
-      .then((port) => {
-        const mediaUrl =
-          `http://127.0.0.1:${port}/media?path=${encodeURIComponent(filePath)}`;
-
+    invoke<number[]>("read_media_file", { path: filePath })
+      .then((bytes) => {
         console.log(
-          "[Medeor Viewer] Using HTTP media URL:",
-          mediaUrl
+          "[Medeor Viewer] Video bytes received:",
+          bytes.length
         );
 
-        video.src = mediaUrl;
-        video.currentTime = 0;
+        const data = new Uint8Array(bytes);
+        const blob = new Blob([data], { type: "video/mp4" });
+        const blobUrl = URL.createObjectURL(blob);
+
+        video.src = blobUrl;
+
+        video.addEventListener(
+          "emptied",
+          () => URL.revokeObjectURL(blobUrl),
+          { once: true }
+        );
+
         video.load();
       })
       .catch((error) => {
-        console.error(
-          "[Medeor Viewer] Could not get media server port:",
-          error
-        );
+        console.error("[Medeor Viewer] Failed to read video:", error);
 
         showError(
-          `Unable to start video playback<br><small>${escapeHtml(filePath)}</small>`
+          `Unable to read video<br><small>${escapeHtml(filePath)}</small>`
         );
       });
   } else if (kind === "gif" || kind === "image") {

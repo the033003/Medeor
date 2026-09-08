@@ -238,52 +238,15 @@
     const cached = mediaUrls.get(path);
     if (cached) return cached;
 
-    const extension =
-      path.split(".").pop()?.toLowerCase() || "";
-
-    const videoExtensions = [
-      "mp4",
-      "webm",
-      "mkv",
-      "mov",
-      "avi",
-      "m4v",
-      "wmv"
-    ];
-
-    let url: string;
-
-    if (videoExtensions.includes(extension)) {
-      // The Rust media server supports HTTP Range requests,
-      // which is important for browser video previews.
-      const encoded = encodeURIComponent(path);
-
-      // The server port is exposed by the existing Tauri command.
-      // This starts with a temporary placeholder; the async
-      // initializer below replaces it once the port is known.
-      url = "";
-    } else {
-      url = convertFileSrc(path);
-    }
-
+    const url = convertFileSrc(path);
     mediaUrls.set(path, url);
     return url;
   }
 
-
-  async function ensureMediaPreview(item: Media) {
-    if (mediaUrls.has(item.path)) return;
-
-    try {
-      const port = await invoke<number>("media_server_port");
-      const url =
-        `http://127.0.0.1:${port}/media?path=` +
-        encodeURIComponent(item.path);
-
-      mediaUrls.set(item.path, url);
+  function ensureMediaPreview(item: Media) {
+    if (!mediaUrls.has(item.path)) {
+      mediaSrc(item.path);
       media = [...media];
-    } catch (e) {
-      console.error("[Medeor] Could not load preview:", item.path, e);
     }
   }
 
@@ -826,7 +789,6 @@
           {:else}
             <div class="library-grid">
               {#each filteredMedia as item}
-                {#if !mediaUrls.get(item.path)}{@const previewRequested = ensureMediaPreview(item)}{/if}
                 <div
                   class:selected={selectedIds.has(item.id)}
                   class="media-card"

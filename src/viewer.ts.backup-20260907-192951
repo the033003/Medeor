@@ -1,5 +1,5 @@
 import "./viewer.css";
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { convertFileSrc } from "@tauri-apps/api/core";
 
 type MediaKind = "video" | "gif" | "image" | "other";
 
@@ -62,15 +62,16 @@ if (!filePath) {
     const video = document.createElement("video");
 
     video.className = "viewer-media";
+    video.src = src;
     video.controls = true;
     video.autoplay = false;
-    video.loop = true;
+    video.loop = false;
     video.playsInline = true;
-    video.preload = "metadata";
+    video.preload = "auto";
 
     video.addEventListener("error", () => {
       console.error("[Medeor Viewer] Video error:", video.error);
-      console.error("[Medeor Viewer] File:", filePath);
+      console.error("[Medeor Viewer] Source:", src);
 
       showError(
         `Unable to play video<br><small>${escapeHtml(filePath)}</small>`
@@ -89,35 +90,6 @@ if (!filePath) {
     });
 
     stage.appendChild(video);
-
-    console.log(
-      "[Medeor Viewer] Requesting media server port..."
-    );
-
-    invoke<number>("media_server_port")
-      .then((port) => {
-        const mediaUrl =
-          `http://127.0.0.1:${port}/media?path=${encodeURIComponent(filePath)}`;
-
-        console.log(
-          "[Medeor Viewer] Using HTTP media URL:",
-          mediaUrl
-        );
-
-        video.src = mediaUrl;
-        video.currentTime = 0;
-        video.load();
-      })
-      .catch((error) => {
-        console.error(
-          "[Medeor Viewer] Could not get media server port:",
-          error
-        );
-
-        showError(
-          `Unable to start video playback<br><small>${escapeHtml(filePath)}</small>`
-        );
-      });
   } else if (kind === "gif" || kind === "image") {
     const image = document.createElement("img");
 

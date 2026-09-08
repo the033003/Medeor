@@ -501,21 +501,9 @@ fn handle_media_connection(mut stream: TcpStream) -> Result<(), String> {
             break;
         }
 
-        match stream.write_all(&buffer[..read]) {
-            Ok(()) => {}
-            Err(error)
-                if error.kind() == std::io::ErrorKind::BrokenPipe
-                    || error.kind() == std::io::ErrorKind::ConnectionReset =>
-            {
-                // Browsers routinely abandon an HTTP range request when
-                // they no longer need that byte range. This is normal
-                // during seeking, replay, and media buffering.
-                return Ok(());
-            }
-            Err(error) => {
-                return Err(format!("Could not send media data: {error}"));
-            }
-        }
+        stream
+            .write_all(&buffer[..read])
+            .map_err(|e| format!("Could not send media data: {e}"))?;
 
         remaining -= read as u64;
     }

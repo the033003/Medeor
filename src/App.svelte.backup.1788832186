@@ -180,110 +180,21 @@
     return "other";
   }
 
-
-  const hoverPreviewTimers = new Map<number, number>();
-
-  function previewVideoEnter(event: MouseEvent, item: Media) {
-    if (item.media_type !== "video") return;
-
-    const video = event.currentTarget as HTMLVideoElement;
-
-    video.muted = true;
-    video.currentTime = 0;
-
-    const timer = window.setTimeout(() => {
-      video.play().catch(() => {
-        // Autoplay may be rejected by WebKit; the poster frame remains visible.
-      });
-    }, 80);
-
-    hoverPreviewTimers.set(item.id, timer);
-  }
-
-  function previewVideoLeave(event: MouseEvent, item: Media) {
-    if (item.media_type !== "video") return;
-
-    const timer = hoverPreviewTimers.get(item.id);
-    if (timer !== undefined) {
-      window.clearTimeout(timer);
-      hoverPreviewTimers.delete(item.id);
-    }
-
-    const video = event.currentTarget as HTMLVideoElement;
-
-    video.pause();
-
-    try {
-      video.currentTime = 0;
-    } catch {
-      // Ignore videos that have not loaded enough metadata yet.
-    }
-  }
-
-  function previewVideoLoaded(event: Event) {
-    const video = event.currentTarget as HTMLVideoElement;
-
-    if (!video.videoWidth || !video.videoHeight) return;
-
-    // Start around one second in so the thumbnail is less likely
-    // to be a black opening frame.
-    if (video.duration > 1) {
-      video.currentTime = Math.min(1, video.duration / 3);
-    }
-  }
-
   const mediaUrls = new Map<string, string>();
 
   function mediaSrc(path: string): string {
     const cached = mediaUrls.get(path);
     if (cached) return cached;
 
-    const extension =
-      path.split(".").pop()?.toLowerCase() || "";
-
-    const videoExtensions = [
-      "mp4",
-      "webm",
-      "mkv",
-      "mov",
-      "avi",
-      "m4v",
-      "wmv"
-    ];
-
-    let url: string;
-
-    if (videoExtensions.includes(extension)) {
-      // The Rust media server supports HTTP Range requests,
-      // which is important for browser video previews.
-      const encoded = encodeURIComponent(path);
-
-      // The server port is exposed by the existing Tauri command.
-      // This starts with a temporary placeholder; the async
-      // initializer below replaces it once the port is known.
-      url = "";
-    } else {
-      url = convertFileSrc(path);
-    }
-
+    const url = convertFileSrc(path);
     mediaUrls.set(path, url);
     return url;
   }
 
-
-  async function ensureMediaPreview(item: Media) {
-    if (mediaUrls.has(item.path)) return;
-
-    try {
-      const port = await invoke<number>("media_server_port");
-      const url =
-        `http://127.0.0.1:${port}/media?path=` +
-        encodeURIComponent(item.path);
-
-      mediaUrls.set(item.path, url);
+  function ensureMediaPreview(item: Media) {
+    if (!mediaUrls.has(item.path)) {
+      mediaSrc(item.path);
       media = [...media];
-    } catch (e) {
-      console.error("[Medeor] Could not load preview:", item.path, e);
     }
   }
 
@@ -826,7 +737,6 @@
           {:else}
             <div class="library-grid">
               {#each filteredMedia as item}
-                {#if !mediaUrls.get(item.path)}{@const previewRequested = ensureMediaPreview(item)}{/if}
                 <div
                   class:selected={selectedIds.has(item.id)}
                   class="media-card"
@@ -861,12 +771,30 @@
                             preload="metadata"
                             muted
                             playsinline
-                            loop
-                            onloadedmetadata={previewVideoLoaded}
-                            onmouseenter={(event) =>
-                              previewVideoEnter(event, item)}
-                            onmouseleave={(event) =>
-                              previewVideoLeave(event, item)}
+                            onmouseenter={(event) => {
+                              const video = event.currentTarget as HTMLVideoElement;
+                              video.currentTime = 0;
+                              video.play().catch(() => {});
+                            }}
+                            onmouseleave={(event) => {
+                              const video = event.currentTarget as HTMLVideoElement;
+                              video.pause();
+                              video.currentTime = 0;
+                            }}
+                            onloadedmetadata={(event) => {
+                              const video = event.currentTarget as HTMLVideoElement;
+
+                              // Pick a useful frame instead of showing a blank
+                              // first frame when possible.
+                              if (video.duration > 0) {
+                                video.currentTime = Math.min(
+                                  1,
+                                  video.duration / 3
+                                );
+                              }
+
+                              mediaLoaded("THUMB VIDEO", item.path);
+                            }}
                             onerror={(event) =>
                               mediaFailed("THUMB VIDEO", item.path, event)}
                           ></video>

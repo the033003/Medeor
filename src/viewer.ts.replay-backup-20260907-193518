@@ -64,7 +64,7 @@ if (!filePath) {
     video.className = "viewer-media";
     video.controls = true;
     video.autoplay = false;
-    video.loop = true;
+    video.loop = false;
     video.playsInline = true;
     video.preload = "metadata";
 
@@ -105,7 +105,6 @@ if (!filePath) {
         );
 
         video.src = mediaUrl;
-        video.currentTime = 0;
         video.load();
       })
       .catch((error) => {

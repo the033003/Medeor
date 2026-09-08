@@ -64,7 +64,7 @@ if (!filePath) {
     video.className = "viewer-media";
     video.controls = true;
     video.autoplay = false;
-    video.loop = true;
+    video.loop = false;
     video.playsInline = true;
     video.preload = "metadata";
 
@@ -86,6 +86,16 @@ if (!filePath) {
         "duration:",
         video.duration
       );
+    });
+
+    // WebKitGTK can occasionally leave a media element in a stalled
+    // state after reaching the end of a range-served video. Reset the
+    // element when playback finishes so the play button works again.
+    video.addEventListener("ended", () => {
+      console.log("[Medeor Viewer] Video ended; resetting for replay.");
+
+      video.pause();
+      video.currentTime = 0;
     });
 
     stage.appendChild(video);

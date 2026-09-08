@@ -270,20 +270,34 @@
     return url;
   }
 
-
   async function ensureMediaPreview(item: Media) {
-    if (mediaUrls.has(item.path)) return;
+    if (mediaUrls.get(item.path)) {
+      return;
+    }
 
     try {
-      const port = await invoke<number>("media_server_port");
-      const url =
-        `http://127.0.0.1:${port}/media?path=` +
-        encodeURIComponent(item.path);
+      if (item.media_type === "video") {
+        const port = await invoke<number>("media_server_port");
+        const encoded = encodeURIComponent(item.path);
 
-      mediaUrls.set(item.path, url);
+        mediaUrls.set(
+          item.path,
+          `http://127.0.0.1:${port}/media?path=${encoded}`
+        );
+      } else {
+        mediaSrc(item.path);
+      }
+
       media = [...media];
     } catch (e) {
-      console.error("[Medeor] Could not load preview:", item.path, e);
+      console.error("[Medeor] Preview URL failed:", item.path, e);
+    }
+  }
+
+  function ensureMediaPreview(item: Media) {
+    if (!mediaUrls.has(item.path)) {
+      mediaSrc(item.path);
+      media = [...media];
     }
   }
 

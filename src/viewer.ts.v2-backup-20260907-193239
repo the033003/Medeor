@@ -64,13 +64,12 @@ if (!filePath) {
     video.className = "viewer-media";
     video.controls = true;
     video.autoplay = false;
-    video.loop = true;
+    video.loop = false;
     video.playsInline = true;
     video.preload = "metadata";
 
     video.addEventListener("error", () => {
       console.error("[Medeor Viewer] Video error:", video.error);
-      console.error("[Medeor Viewer] File:", filePath);
 
       showError(
         `Unable to play video<br><small>${escapeHtml(filePath)}</small>`
@@ -90,22 +89,18 @@ if (!filePath) {
 
     stage.appendChild(video);
 
-    console.log(
-      "[Medeor Viewer] Requesting media server port..."
-    );
-
+    // Linux WebKitGTK can have problems playing large local MP4 files
+    // through Tauri's asset:// protocol. Use the local range-capable
+    // HTTP media server instead.
     invoke<number>("media_server_port")
       .then((port) => {
+        const encoded = encodeURIComponent(filePath);
         const mediaUrl =
-          `http://127.0.0.1:${port}/media?path=${encodeURIComponent(filePath)}`;
+          `http://127.0.0.1:${port}/media?path=${encoded}`;
 
-        console.log(
-          "[Medeor Viewer] Using HTTP media URL:",
-          mediaUrl
-        );
+        console.log("[Medeor Viewer] Video URL:", mediaUrl);
 
         video.src = mediaUrl;
-        video.currentTime = 0;
         video.load();
       })
       .catch((error) => {
