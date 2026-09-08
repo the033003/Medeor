@@ -1,5 +1,5 @@
 use rusqlite::{params, Connection};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::{TcpListener, TcpStream};
@@ -19,25 +19,6 @@ struct Media {
     media_type: String,
     size: i64,
     added_at: String,
-}
-
-#[derive(Debug, Serialize)]
-struct MediaOrganization {
-    media_id: i64,
-    tags: Vec<Tag>,
-    playlists: Vec<Playlist>,
-}
-
-#[derive(Debug, Serialize)]
-struct MediaWithOrganization {
-    id: i64,
-    path: String,
-    name: String,
-    media_type: String,
-    size: i64,
-    added_at: String,
-    tags: Vec<Tag>,
-    playlists: Vec<Playlist>,
 }
 
 fn media_type(path: &Path) -> &'static str {
@@ -154,29 +135,22 @@ struct PlaylistItem {
 }
 
 #[tauri::command]
-fn create_tag(
-    db: State<'_, Database>,
-    name: String,
-) -> Result<Tag, String> {
+fn create_tag(name: String) -> Result<Tag, String> {
     let name = name.trim().to_string();
 
     if name.is_empty() {
         return Err("Tag name cannot be empty".to_string());
     }
 
-    let connection = db
-        .0
-        .lock()
-        .map_err(|_| "Database lock failed".to_string())?;
+    let conn = open_db()?;
 
-    connection
-        .execute(
-            "INSERT OR IGNORE INTO tags (name) VALUES (?1)",
-            params![name],
-        )
-        .map_err(|e| format!("Could not create tag: {e}"))?;
+    conn.execute(
+        "INSERT OR IGNORE INTO tags (name) VALUES (?1)",
+        params![name],
+    )
+    .map_err(|e| format!("Could not create tag: {e}"))?;
 
-    connection
+    let tag = conn
         .query_row(
             "SELECT id, name FROM tags WHERE name = ?1",
             params![name],
@@ -187,24 +161,17 @@ fn create_tag(
                 })
             },
         )
-        .map_err(|e| format!("Could not read tag: {e}"))
+        .map_err(|e| format!("Could not read tag: {e}"))?;
+
+    Ok(tag)
 }
 
 #[tauri::command]
-fn list_tags(
-    db: State<'_, Database>,
-) -> Result<Vec<Tag>, String> {
-    let connection = db
-        .0
-        .lock()
-        .map_err(|_| "Database lock failed".to_string())?;
+fn list_tags() -> Result<Vec<Tag>, String> {
+    let conn = open_db()?;
 
-    let mut stmt = connection
-        .prepare(
-            "SELECT id, name
-             FROM tags
-             ORDER BY name COLLATE NOCASE",
-        )
+    let mut stmt = conn
+        .prepare("SELECT id, name FROM tags ORDER BY name COLLATE NOCASE")
         .map_err(|e| format!("Could not prepare tag query: {e}"))?;
 
     let rows = stmt
@@ -216,84 +183,57 @@ fn list_tags(
         })
         .map_err(|e| format!("Could not query tags: {e}"))?;
 
-    rows.map(|row| {
-        row.map_err(|e| format!("Could not read tag: {e}"))
-    })
-    .collect()
+    rows.map(|row| row.map_err(|e| format!("Could not read tag: {e}")))
+        .collect()
 }
 
 #[tauri::command]
-fn delete_tag(
-    db: State<'_, Database>,
-    id: i64,
-) -> Result<(), String> {
-    let connection = db
-        .0
-        .lock()
-        .map_err(|_| "Database lock failed".to_string())?;
+fn delete_tag(id: i64) -> Result<(), String> {
+    let conn = open_db()?;
 
-    connection
-        .execute(
-            "DELETE FROM tags WHERE id = ?1",
-            params![id],
-        )
+    conn.execute("DELETE FROM tags WHERE id = ?1", params![id])
         .map_err(|e| format!("Could not delete tag: {e}"))?;
 
     Ok(())
 }
 
 #[tauri::command]
-fn create_playlist(
-    db: State<'_, Database>,
-    name: String,
-) -> Result<Playlist, String> {
+fn create_playlist(name: String) -> Result<Playlist, String> {
     let name = name.trim().to_string();
 
     if name.is_empty() {
         return Err("Playlist name cannot be empty".to_string());
     }
 
-    let connection = db
-        .0
-        .lock()
-        .map_err(|_| "Database lock failed".to_string())?;
+    let conn = open_db()?;
 
-    connection
-        .execute(
-            "INSERT INTO playlists (name) VALUES (?1)",
-            params![name],
-        )
-        .map_err(|e| format!("Could not create playlist: {e}"))?;
+    conn.execute(
+        "INSERT INTO playlists (name) VALUES (?1)",
+        params![name],
+    )
+    .map_err(|e| format!("Could not create playlist: {e}"))?;
 
-    let id = connection.last_insert_rowid();
+    let id = conn.last_insert_rowid();
 
-    connection
-        .query_row(
-            "SELECT id, name, created_at
-             FROM playlists
-             WHERE id = ?1",
-            params![id],
-            |row| {
-                Ok(Playlist {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    created_at: row.get(2)?,
-                })
-            },
-        )
-        .map_err(|e| format!("Could not read playlist: {e}"))
+    conn.query_row(
+        "SELECT id, name, created_at FROM playlists WHERE id = ?1",
+        params![id],
+        |row| {
+            Ok(Playlist {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                created_at: row.get(2)?,
+            })
+        },
+    )
+    .map_err(|e| format!("Could not read playlist: {e}"))
 }
 
 #[tauri::command]
-fn list_playlists(
-    db: State<'_, Database>,
-) -> Result<Vec<Playlist>, String> {
-    let connection = db
-        .0
-        .lock()
-        .map_err(|_| "Database lock failed".to_string())?;
+fn list_playlists() -> Result<Vec<Playlist>, String> {
+    let conn = open_db()?;
 
-    let mut stmt = connection
+    let mut stmt = conn
         .prepare(
             "SELECT id, name, created_at
              FROM playlists
@@ -318,37 +258,26 @@ fn list_playlists(
 }
 
 #[tauri::command]
-fn delete_playlist(
-    db: State<'_, Database>,
-    id: i64,
-) -> Result<(), String> {
-    let connection = db
-        .0
-        .lock()
-        .map_err(|_| "Database lock failed".to_string())?;
+fn delete_playlist(id: i64) -> Result<(), String> {
+    let conn = open_db()?;
 
-    connection
-        .execute(
-            "DELETE FROM playlists WHERE id = ?1",
-            params![id],
-        )
-        .map_err(|e| format!("Could not delete playlist: {e}"))?;
+    conn.execute(
+        "DELETE FROM playlists WHERE id = ?1",
+        params![id],
+    )
+    .map_err(|e| format!("Could not delete playlist: {e}"))?;
 
     Ok(())
 }
 
 #[tauri::command]
 fn add_to_playlist(
-    db: State<'_, Database>,
     playlist_id: i64,
     media_id: i64,
 ) -> Result<(), String> {
-    let connection = db
-        .0
-        .lock()
-        .map_err(|_| "Database lock failed".to_string())?;
+    let conn = open_db()?;
 
-    let position: i64 = connection
+    let position: i64 = conn
         .query_row(
             "SELECT COALESCE(MAX(position), -1) + 1
              FROM playlist_items
@@ -358,311 +287,64 @@ fn add_to_playlist(
         )
         .map_err(|e| format!("Could not determine playlist position: {e}"))?;
 
-    connection
-        .execute(
-            "INSERT OR IGNORE INTO playlist_items
-             (playlist_id, media_id, position)
-             VALUES (?1, ?2, ?3)",
-            params![playlist_id, media_id, position],
-        )
-        .map_err(|e| format!("Could not add media to playlist: {e}"))?;
+    conn.execute(
+        "INSERT OR IGNORE INTO playlist_items
+         (playlist_id, media_id, position)
+         VALUES (?1, ?2, ?3)",
+        params![playlist_id, media_id, position],
+    )
+    .map_err(|e| format!("Could not add media to playlist: {e}"))?;
 
     Ok(())
 }
 
 #[tauri::command]
 fn remove_from_playlist(
-    db: State<'_, Database>,
     playlist_id: i64,
     media_id: i64,
 ) -> Result<(), String> {
-    let connection = db
-        .0
-        .lock()
-        .map_err(|_| "Database lock failed".to_string())?;
+    let conn = open_db()?;
 
-    connection
-        .execute(
-            "DELETE FROM playlist_items
-             WHERE playlist_id = ?1 AND media_id = ?2",
-            params![playlist_id, media_id],
-        )
-        .map_err(|e| format!("Could not remove media from playlist: {e}"))?;
+    conn.execute(
+        "DELETE FROM playlist_items
+         WHERE playlist_id = ?1 AND media_id = ?2",
+        params![playlist_id, media_id],
+    )
+    .map_err(|e| format!("Could not remove media from playlist: {e}"))?;
 
     Ok(())
 }
 
 #[tauri::command]
 fn add_tag_to_media(
-    db: State<'_, Database>,
     media_id: i64,
     tag_id: i64,
 ) -> Result<(), String> {
-    let connection = db
-        .0
-        .lock()
-        .map_err(|_| "Database lock failed".to_string())?;
+    let conn = open_db()?;
 
-    connection
-        .execute(
-            "INSERT OR IGNORE INTO media_tags (media_id, tag_id)
-             VALUES (?1, ?2)",
-            params![media_id, tag_id],
-        )
-        .map_err(|e| format!("Could not tag media: {e}"))?;
+    conn.execute(
+        "INSERT OR IGNORE INTO media_tags (media_id, tag_id)
+         VALUES (?1, ?2)",
+        params![media_id, tag_id],
+    )
+    .map_err(|e| format!("Could not tag media: {e}"))?;
 
     Ok(())
 }
 
 #[tauri::command]
 fn remove_tag_from_media(
-    db: State<'_, Database>,
     media_id: i64,
     tag_id: i64,
 ) -> Result<(), String> {
-    let connection = db
-        .0
-        .lock()
-        .map_err(|_| "Database lock failed".to_string())?;
+    let conn = open_db()?;
 
-    connection
-        .execute(
-            "DELETE FROM media_tags
-             WHERE media_id = ?1 AND tag_id = ?2",
-            params![media_id, tag_id],
-        )
-        .map_err(|e| format!("Could not remove tag: {e}"))?;
-
-    Ok(())
-}
-
-
-fn media_tags_for_connection(
-    conn: &Connection,
-    media_id: i64,
-) -> Result<Vec<Tag>, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT t.id, t.name
-             FROM tags t
-             INNER JOIN media_tags mt ON mt.tag_id = t.id
-             WHERE mt.media_id = ?1
-             ORDER BY t.name COLLATE NOCASE",
-        )
-        .map_err(|e| format!("Could not prepare media tag query: {e}"))?;
-
-    let rows = stmt
-        .query_map(params![media_id], |row| {
-            Ok(Tag {
-                id: row.get(0)?,
-                name: row.get(1)?,
-            })
-        })
-        .map_err(|e| format!("Could not query media tags: {e}"))?;
-
-    rows.map(|row| row.map_err(|e| format!("Could not read media tag: {e}")))
-        .collect()
-}
-
-fn media_playlists_for_connection(
-    conn: &Connection,
-    media_id: i64,
-) -> Result<Vec<Playlist>, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT p.id, p.name, p.created_at
-             FROM playlists p
-             INNER JOIN playlist_items pi ON pi.playlist_id = p.id
-             WHERE pi.media_id = ?1
-             ORDER BY p.name COLLATE NOCASE",
-        )
-        .map_err(|e| format!("Could not prepare media playlist query: {e}"))?;
-
-    let rows = stmt
-        .query_map(params![media_id], |row| {
-            Ok(Playlist {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                created_at: row.get(2)?,
-            })
-        })
-        .map_err(|e| format!("Could not query media playlists: {e}"))?;
-
-    rows.map(|row| row.map_err(|e| format!("Could not read media playlist: {e}")))
-        .collect()
-}
-
-#[tauri::command]
-fn get_media_organization(
-    db: State<'_, Database>,
-    media_id: i64,
-) -> Result<MediaOrganization, String> {
-    let conn = db
-        .0
-        .lock()
-        .map_err(|_| "Database lock failed".to_string())?;
-
-    Ok(MediaOrganization {
-        media_id,
-        tags: media_tags_for_connection(&conn, media_id)?,
-        playlists: media_playlists_for_connection(&conn, media_id)?,
-    })
-}
-
-#[tauri::command]
-fn list_media_organization(
-    db: State<'_, Database>,
-) -> Result<Vec<MediaOrganization>, String> {
-    let conn = db
-        .0
-        .lock()
-        .map_err(|_| "Database lock failed".to_string())?;
-
-    let mut stmt = conn
-        .prepare("SELECT id FROM media ORDER BY id")
-        .map_err(|e| format!("Could not prepare organization query: {e}"))?;
-
-    let ids: Vec<i64> = stmt
-        .query_map([], |row| row.get(0))
-        .map_err(|e| format!("Could not query media IDs: {e}"))?
-        .map(|row| row.map_err(|e| format!("Could not read media ID: {e}")))
-        .collect::<Result<Vec<_>, _>>()?;
-
-    ids.into_iter()
-        .map(|media_id| {
-            Ok(MediaOrganization {
-                media_id,
-                tags: media_tags_for_connection(&conn, media_id)?,
-                playlists: media_playlists_for_connection(&conn, media_id)?,
-            })
-        })
-        .collect()
-}
-
-#[tauri::command]
-fn set_media_tags(
-    db: State<'_, Database>,
-    media_id: i64,
-    tag_ids: Vec<i64>,
-) -> Result<(), String> {
-    let conn = db
-        .0
-        .lock()
-        .map_err(|_| "Database lock failed".to_string())?;
-
-    let tx = conn
-        .unchecked_transaction()
-        .map_err(|e| format!("Could not begin tag update: {e}"))?;
-
-    tx.execute(
-        "DELETE FROM media_tags WHERE media_id = ?1",
-        params![media_id],
+    conn.execute(
+        "DELETE FROM media_tags
+         WHERE media_id = ?1 AND tag_id = ?2",
+        params![media_id, tag_id],
     )
-    .map_err(|e| format!("Could not clear media tags: {e}"))?;
-
-    for tag_id in tag_ids {
-        tx.execute(
-            "INSERT OR IGNORE INTO media_tags (media_id, tag_id)
-             VALUES (?1, ?2)",
-            params![media_id, tag_id],
-        )
-        .map_err(|e| format!("Could not assign tag: {e}"))?;
-    }
-
-    tx.commit()
-        .map_err(|e| format!("Could not save media tags: {e}"))?;
-
-    Ok(())
-}
-
-#[tauri::command]
-fn set_media_playlists(
-    db: State<'_, Database>,
-    media_id: i64,
-    playlist_ids: Vec<i64>,
-) -> Result<(), String> {
-    let conn = db
-        .0
-        .lock()
-        .map_err(|_| "Database lock failed".to_string())?;
-
-    let tx = conn
-        .unchecked_transaction()
-        .map_err(|e| format!("Could not begin playlist update: {e}"))?;
-
-    tx.execute(
-        "DELETE FROM playlist_items WHERE media_id = ?1",
-        params![media_id],
-    )
-    .map_err(|e| format!("Could not clear media playlists: {e}"))?;
-
-    for (position, playlist_id) in playlist_ids.into_iter().enumerate() {
-        tx.execute(
-            "INSERT OR IGNORE INTO playlist_items
-             (playlist_id, media_id, position)
-             VALUES (?1, ?2, ?3)",
-            params![playlist_id, media_id, position as i64],
-        )
-        .map_err(|e| format!("Could not assign playlist: {e}"))?;
-    }
-
-    tx.commit()
-        .map_err(|e| format!("Could not save media playlists: {e}"))?;
-
-    Ok(())
-}
-
-#[tauri::command]
-fn set_organization_for_media(
-    db: State<'_, Database>,
-    media_ids: Vec<i64>,
-    tag_ids: Vec<i64>,
-    playlist_ids: Vec<i64>,
-) -> Result<(), String> {
-    let conn = db
-        .0
-        .lock()
-        .map_err(|_| "Database lock failed".to_string())?;
-
-    let tx = conn
-        .unchecked_transaction()
-        .map_err(|e| format!("Could not begin bulk organization update: {e}"))?;
-
-    for media_id in media_ids {
-        tx.execute(
-            "DELETE FROM media_tags WHERE media_id = ?1",
-            params![media_id],
-        )
-        .map_err(|e| format!("Could not clear media tags: {e}"))?;
-
-        for tag_id in &tag_ids {
-            tx.execute(
-                "INSERT OR IGNORE INTO media_tags (media_id, tag_id)
-                 VALUES (?1, ?2)",
-                params![media_id, tag_id],
-            )
-            .map_err(|e| format!("Could not assign bulk tag: {e}"))?;
-        }
-
-        tx.execute(
-            "DELETE FROM playlist_items WHERE media_id = ?1",
-            params![media_id],
-        )
-        .map_err(|e| format!("Could not clear media playlists: {e}"))?;
-
-        for (position, playlist_id) in playlist_ids.iter().enumerate() {
-            tx.execute(
-                "INSERT OR IGNORE INTO playlist_items
-                 (playlist_id, media_id, position)
-                 VALUES (?1, ?2, ?3)",
-                params![playlist_id, media_id, position as i64],
-            )
-            .map_err(|e| format!("Could not assign bulk playlist: {e}"))?;
-        }
-    }
-
-    tx.commit()
-        .map_err(|e| format!("Could not save bulk organization: {e}"))?;
+    .map_err(|e| format!("Could not remove tag: {e}"))?;
 
     Ok(())
 }
@@ -1202,22 +884,7 @@ pub fn run() {
             remove_media,
             open_viewer,
             read_media_file,
-            media_server_port,
-            create_tag,
-            list_tags,
-            delete_tag,
-            create_playlist,
-            list_playlists,
-            delete_playlist,
-            add_to_playlist,
-            remove_from_playlist,
-            add_tag_to_media,
-            remove_tag_from_media,
-            get_media_organization,
-            list_media_organization,
-            set_media_tags,
-            set_media_playlists,
-            set_organization_for_media
+            media_server_port
         ])
         .run(tauri::generate_context!())
         .expect("error while running Medeor");

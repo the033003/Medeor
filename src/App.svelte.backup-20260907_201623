@@ -12,13 +12,7 @@
     media_type: string;
     size: number;
     added_at: string;
-  }
-  type PlaylistItem = {
-    playlist_id: number;
-    media_id: number;
-    position: number;
   };
-;
 
   let page: Page = "view";
   let search = "";
@@ -844,9 +838,16 @@
   // Tags + Playlists
   // ============================================================
 
-;
+  type Tag = {
+    id: number;
+    name: string;
+  };
 
-;
+  type Playlist = {
+    id: number;
+    name: string;
+    created_at: string;
+  };
 
   let tags: Tag[] = [];
   let playlists: Playlist[] = [];
@@ -1574,27 +1575,6 @@
                       {/if}
 
                       <div class="media-hover-info">
-                        {#if organizationFor(item).tags.length || organizationFor(item).playlists.length}
-                          <div class="organization-badges">
-                            {#each organizationFor(item).tags.slice(0, 3) as tag}
-                              <span class="organization-badge tag-badge">
-                                #{tag.name}
-                              </span>
-                            {/each}
-
-                            {#if organizationFor(item).tags.length > 3}
-                              <span class="organization-badge muted-badge">
-                                +{organizationFor(item).tags.length - 3}
-                              </span>
-                            {/if}
-
-                            {#if organizationFor(item).playlists.length}
-                              <span class="organization-badge playlist-badge">
-                                ♫ {organizationFor(item).playlists[0].name}
-                              </span>
-                            {/if}
-                          </div>
-                        {/if}
                         <div class="media-name">{item.name}</div>
                         <div class="media-meta">
                           {item.media_type} · {formatSize(item.size)}
@@ -2133,119 +2113,6 @@
       </div>
     </div>
   {/if}
-
-{#if organizationDialog}
-  <div
-    class="modal-backdrop organization-dialog-backdrop"
-    role="presentation"
-    onclick={(event) => {
-      if (event.target === event.currentTarget) {
-        organizationDialog = null;
-      }
-    }}
-  >
-    <div class="organization-dialog" role="dialog" aria-modal="true">
-      <div class="organization-dialog-header">
-        <div>
-          <div class="eyebrow">
-            {organizationDialog.kind === "tags" ? "TAGS" : "PLAYLIST"}
-          </div>
-
-          <h2>
-            {organizationDialog.kind === "tags"
-              ? "Organize tags"
-              : "Add to playlist"}
-          </h2>
-
-          <p>{organizationDialog.media.name}</p>
-        </div>
-
-        <button
-          class="organization-dialog-close"
-          aria-label="Close"
-          onclick={() => (organizationDialog = null)}
-        >
-          ×
-        </button>
-      </div>
-
-      {#if organizationDialog.kind === "tags"}
-        <div class="organization-dialog-list">
-          {#if tags.length === 0}
-            <div class="organization-dialog-empty">
-              No tags yet. Create one from the Tags section.
-            </div>
-          {:else}
-            {#each tags as tag}
-              <button
-                class="organization-choice"
-                class:organization-choice-active={tagIsApplied(
-                  organizationDialog.media,
-                  tag
-                )}
-                onclick={() => toggleMediaTag(tag)}
-                disabled={organizationLoading}
-              >
-                <span class="organization-choice-check">
-                  {tagIsApplied(organizationDialog.media, tag) ? "✓" : ""}
-                </span>
-
-                <span>#{tag.name}</span>
-
-                <span class="organization-choice-state">
-                  {tagIsApplied(organizationDialog.media, tag)
-                    ? "Applied"
-                    : "Add"}
-                </span>
-              </button>
-            {/each}
-          {/if}
-        </div>
-      {:else}
-        <div class="organization-dialog-list">
-          {#if playlists.length === 0}
-            <div class="organization-dialog-empty">
-              No playlists yet. Create one from the Playlists section.
-            </div>
-          {:else}
-            {#each playlists as playlist}
-              <button
-                class="organization-choice"
-                class:organization-choice-active={playlistIsApplied(
-                  organizationDialog.media,
-                  playlist
-                )}
-                onclick={() => toggleMediaPlaylist(playlist)}
-                disabled={organizationLoading}
-              >
-                <span class="organization-choice-check">
-                  {playlistIsApplied(
-                    organizationDialog.media,
-                    playlist
-                  )
-                    ? "✓"
-                    : ""}
-                </span>
-
-                <span>♫ {playlist.name}</span>
-
-                <span class="organization-choice-state">
-                  {playlistIsApplied(
-                    organizationDialog.media,
-                    playlist
-                  )
-                    ? "Added"
-                    : "Add"}
-                </span>
-              </button>
-            {/each}
-          {/if}
-        </div>
-      {/if}
-    </div>
-  </div>
-{/if}
-
 {/if}
 
 
@@ -2932,160 +2799,6 @@
   justify-content: flex-end;
 }
 
-/* ============================================================
-     Medeor organization UX
-     ============================================================ */
-
-  .organization-badges {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 5px;
-    margin-top: 7px;
-    max-width: 100%;
-  }
-
-  .organization-badge {
-    display: inline-flex;
-    align-items: center;
-    max-width: 180px;
-    padding: 3px 7px;
-    border-radius: 999px;
-    font-size: 11px;
-    line-height: 1.2;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .tag-badge {
-    color: #e8e2ff;
-    background: rgba(126, 92, 255, 0.25);
-    border: 1px solid rgba(150, 120, 255, 0.28);
-  }
-
-  .playlist-badge {
-    color: #dff8ee;
-    background: rgba(42, 145, 112, 0.24);
-    border: 1px solid rgba(76, 190, 150, 0.25);
-  }
-
-  .muted-badge {
-    color: rgba(255,255,255,.62);
-    background: rgba(255,255,255,.07);
-  }
-
-  .organization-dialog {
-    width: min(520px, calc(100vw - 32px));
-    max-height: min(680px, calc(100vh - 48px));
-    overflow: hidden;
-    display: flex;
-    flex-direction: column;
-    background: #17151f;
-    border: 1px solid rgba(255,255,255,.10);
-    border-radius: 18px;
-    box-shadow: 0 30px 90px rgba(0,0,0,.55);
-  }
-
-  .organization-dialog-header {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 20px;
-    padding: 22px 22px 16px;
-    border-bottom: 1px solid rgba(255,255,255,.07);
-  }
-
-  .organization-dialog-header h2 {
-    margin: 3px 0 4px;
-    font-size: 21px;
-  }
-
-  .organization-dialog-header p {
-    margin: 0;
-    max-width: 390px;
-    color: rgba(255,255,255,.55);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .organization-dialog-close {
-    width: 34px;
-    height: 34px;
-    border: 0;
-    border-radius: 9px;
-    color: rgba(255,255,255,.7);
-    background: rgba(255,255,255,.06);
-    cursor: pointer;
-    font-size: 22px;
-  }
-
-  .organization-dialog-close:hover {
-    background: rgba(255,255,255,.10);
-    color: white;
-  }
-
-  .organization-dialog-list {
-    padding: 12px;
-    overflow-y: auto;
-  }
-
-  .organization-choice {
-    width: 100%;
-    display: grid;
-    grid-template-columns: 30px minmax(0,1fr) auto;
-    align-items: center;
-    gap: 10px;
-    padding: 11px 12px;
-    margin-bottom: 5px;
-    border: 1px solid transparent;
-    border-radius: 11px;
-    background: transparent;
-    color: rgba(255,255,255,.82);
-    text-align: left;
-    cursor: pointer;
-    transition: background .15s ease, border-color .15s ease;
-  }
-
-  .organization-choice:hover {
-    background: rgba(255,255,255,.055);
-  }
-
-  .organization-choice-active {
-    background: rgba(126,92,255,.11);
-    border-color: rgba(126,92,255,.24);
-  }
-
-  .organization-choice-check {
-    width: 22px;
-    height: 22px;
-    display: grid;
-    place-items: center;
-    border-radius: 7px;
-    background: rgba(255,255,255,.07);
-    color: #bcaaff;
-    font-weight: 700;
-  }
-
-  .organization-choice-active .organization-choice-check {
-    background: #7657ed;
-    color: white;
-  }
-
-  .organization-choice-state {
-    color: rgba(255,255,255,.42);
-    font-size: 12px;
-  }
-
-  .organization-choice-active .organization-choice-state {
-    color: #bcaaff;
-  }
-
-  .organization-dialog-empty {
-    padding: 30px 18px;
-    text-align: center;
-    color: rgba(255,255,255,.48);
-  }
 </style>
 
 
