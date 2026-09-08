@@ -1,0 +1,22 @@
+{
+  "name": "medeor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "latest",
+    "svelte": "latest"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "latest",
+    "@sveltejs/vite-plugin-svelte": "latest",
+    "typescript": "latest",
+    "vite": "latest"
+  }
+}
